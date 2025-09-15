@@ -1,0 +1,200 @@
+from flask import Blueprint, request, jsonify
+from app.model import db, Assesment, Patient
+import faiss
+import numpy as np
+import os
+from datetime import datetime
+from dotenv import load_dotenv
+from openai import OpenAI
+from sentence_transformers import SentenceTransformer
+
+load_dotenv()
+api_key = os.getenv("OPENROUTER_API_KEY_KU")
+
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=api_key,
+)
+
+model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
+assesment_bp = Blueprint("assesment_bp", __name__, url_prefix="/assesments")
+
+FAISS_INDEX = None
+EMBEDDING_DIM = 384
+FAISS_INDEX_FILE = "app/faisses/assesment/assesmen.faiss"
+
+
+def initialize_faiss_index():
+    """Load FAISS index from file or create new one if not exist"""
+    global FAISS_INDEX
+    if FAISS_INDEX is None:
+        if os.path.exists(FAISS_INDEX_FILE):
+            FAISS_INDEX = faiss.read_index(FAISS_INDEX_FILE)
+        else:
+            FAISS_INDEX = faiss.IndexIDMap(faiss.IndexFlatL2(EMBEDDING_DIM))
+
+
+def save_faiss_index():
+    """Save FAISS index to file"""
+    if FAISS_INDEX is not None:
+        faiss.write_index(FAISS_INDEX, FAISS_INDEX_FILE)
+
+
+@assesment_bp.route("/", methods=["GET"])
+def get_assesments():
+    assesments = Assesment.query.all()
+    data = [
+        {
+            "id": a.id,
+            "patient_id": a.patient_id,
+            "tanggal": a.tanggal.isoformat(),
+            "perawat": a.perawat,
+            "data": a.data,
+        }
+        for a in assesments
+    ]
+    return jsonify({"status": 200, "message": "Success", "data": data}), 200
+
+
+@assesment_bp.route("/<int:assesment_id>", methods=["GET"])
+def get_assesment(assesment_id):
+    assesment = Assesment.query.get(assesment_id)
+    if not assesment:
+        return jsonify({"status": 404, "message": "Assesment not found"}), 404
+
+    data = {
+        "id": assesment.id,
+        "patient_id": assesment.patient_id,
+        "tanggal": assesment.tanggal.isoformat(),
+        "perawat": assesment.perawat,
+        "data": assesment.data,
+    }
+    return jsonify({"status": 200, "message": "Success", "data": data}), 200
+
+
+@assesment_bp.route("/", methods=["POST"])
+def create_assesment():
+    payload = request.get_json()
+
+    if not payload or not payload.get("query") or  not payload.get("perawat"):
+        return jsonify({"status": 400, "message": "Fields required: query, patient_id, perawat"}), 400
+
+
+    if FAISS_INDEX_FILE and not os.path.exists(FAISS_INDEX_FILE):
+        return jsonify({"status": 210, "message": "belum mengupload data assesmen"}), 400
+
+    query = payload["query"]
+    perawat = payload["perawat"]
+
+
+    query_vector = model.encode([query], convert_to_numpy=True).astype("float32")
+
+    try:
+        completion = client.chat.completions.create(
+            model="deepseek/deepseek-chat-v3.1:free",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Susun JSON terstruktur yang mengisi semua field ASESMEN AWAL KEPERAWATAN RAWAT INAP dengan tambahan filed berikut alamat pekerjaan status_perkawinan penanggung_jawab hubungan_penanggung_jawab kontak_penanggung_jawab masuk ke bagian informasi umum dan agama jika filed agama sudah ada di tempat lain maka tambahkan saja berdasarkan teks berikut.",
+                },
+                {"role": "user", "content": query},
+            ],
+        )
+        ai_json = completion.choices[0].message.content
+    except Exception as e:
+        return jsonify({"status": 500, "message": f"AI processing failed: {str(e)}"}), 500
+
+    new_assesment = Assesment(
+        perawat=perawat,
+        tanggal=datetime.utcnow(),
+        data=ai_json,
+    )
+    db.session.add(new_assesment)
+    db.session.commit()
+
+    initialize_faiss_index()
+    FAISS_INDEX.add_with_ids(query_vector, np.array([new_assesment.id]))
+    save_faiss_index()
+
+    return jsonify(
+        {
+            "status": 201,
+            "message": "Assesment created successfully",
+            "data": {
+                "id": new_assesment.id,
+                "perawat": perawat,
+                "tanggal": new_assesment.tanggal.isoformat(),
+                "data": ai_json,
+            },
+        }
+    ), 201
+
+
+@assesment_bp.route("/<int:assesment_id>", methods=["PUT"])
+def update_assesment(assesment_id):
+    assesment = Assesment.query.get(assesment_id)
+    if not assesment:
+        return jsonify({"status": 404, "message": "Assesment not found"}), 404
+
+    payload = request.get_json()
+    if not payload:
+        return jsonify({"status": 400, "message": "No data provided"}), 400
+
+    if "perawat" in payload:
+        assesment.perawat = payload["perawat"]
+
+    if "data" in payload:
+        assesment.data = payload["data"]
+
+    db.session.commit()
+
+    return jsonify({"status": 200, "message": "Assesment updated", "data": {"id": assesment.id}}), 200
+
+
+@assesment_bp.route("/<int:assesment_id>", methods=["DELETE"])
+def delete_assesment(assesment_id):
+    assesment = Assesment.query.get(assesment_id)
+    if not assesment:
+        return jsonify({"status": 404, "message": "Assesment not found"}), 404
+
+    db.session.delete(assesment)
+    db.session.commit()
+
+
+    return jsonify({"status": 200, "message": "Assesment deleted"}), 200
+
+
+@assesment_bp.route("/search", methods=["POST"])
+def search_assesments():
+    payload = request.get_json()
+    query_string = payload.get("query") if payload else None
+
+    if not query_string:
+        return jsonify({"status": 400, "message": "Missing field: query"}), 400
+
+    initialize_faiss_index()
+    if FAISS_INDEX.ntotal == 0:
+        return jsonify({"status": 200, "message": "No assessments in index", "data": []}), 200
+
+    query_vector = model.encode([query_string], convert_to_numpy=True).astype("float32")
+
+    k = 10
+    distances, indices = FAISS_INDEX.search(np.array([query_vector]), k)
+
+    results = []
+    for i, assesment_id in enumerate(indices[0]):
+        assesment = Assesment.query.get(int(assesment_id))
+        if assesment:
+            results.append(
+                {
+                    "id": assesment.id,
+                    "patient_id": assesment.patient_id,
+                    "tanggal": assesment.tanggal.isoformat(),
+                    "perawat": assesment.perawat,
+                    "data": assesment.data,
+                    "relevance_score": float(1 / (1 + distances[0][i])),
+                }
+            )
+
+    return jsonify({"status": 200, "message": "Success", "data": results}), 200
