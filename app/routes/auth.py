@@ -46,7 +46,13 @@ def login():
         identity=str(user.id),
         additional_claims={"role": user.role.name}
     )
-    return jsonify(access_token=access_token), 200
+
+    return jsonify({
+        "access_token": access_token,
+            "username": user.username,
+            "email": user.email,
+            "role": user.role.name
+    }), 200
 
 
 @auth_bp.route("/profile", methods=["GET"])
