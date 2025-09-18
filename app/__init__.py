@@ -3,7 +3,7 @@ from flask_sqlalchemy import SQLAlchemy
 from config import Config
 from flask_jwt_extended import JWTManager
 from flask_migrate import Migrate
-
+from flasgger import Swagger
 
 db = SQLAlchemy()
 jwt = JWTManager()
@@ -12,6 +12,7 @@ migrate = Migrate()
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
+    swagger = Swagger(app, template_file='swagger.yaml')
 
 
     db.init_app(app)

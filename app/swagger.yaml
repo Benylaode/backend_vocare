@@ -1,0 +1,750 @@
+swagger: "2.0"
+info:
+  title: Medical Records API
+  description: API untuk mengelola data rekam medis pasien, pengguna, laporan, dan dokumen medis lainnya.
+  version: 1.0.0
+host: localhost:5000
+basePath: /
+schemes:
+  - http
+
+produces:
+  - application/json
+consumes:
+  - application/json
+
+securityDefinitions:
+  bearerAuth:
+    type: apiKey
+    name: Authorization
+    in: header
+    description: "Masukkan token JWT dengan format: 'Bearer {token}'"
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Auth
+    description: Endpoint untuk autentikasi dan manajemen profil
+  - name: Users
+    description: Operasi CRUD untuk pengguna (memerlukan hak akses admin)
+  - name: Patients
+    description: Pengelolaan data pasien
+  - name: Assesments
+    description: Pengelolaan data asesmen awal
+  - name: CPPT
+    description: Pengelolaan Catatan Perkembangan Pasien Terintegrasi (CPPT)
+  - name: Laporan
+    description: Pembuatan dan pengelolaan laporan medis
+  - name: PDF Processing
+    description: Endpoint untuk mengunggah dan memproses dokumen PDF
+
+definitions:
+  User:
+    type: object
+    properties:
+      id:
+        type: integer
+        example: 1
+      username:
+        type: string
+        example: perawat_ahli
+      email:
+        type: string
+        format: email
+        example: perawat@example.com
+      role:
+        type: string
+        enum: [admin, user, ketim]
+        example: user
+
+  NewUser:
+    type: object
+    required:
+      - username
+      - email
+      - password
+    properties:
+      username:
+        type: string
+        example: perawat_baru
+      email:
+        type: string
+        format: email
+        example: baru@example.com
+      password:
+        type: string
+        format: password
+        example: password123
+      role:
+        type: string
+        enum: [admin, user, ketim]
+        example: user
+        description: "Default adalah 'user' jika tidak disediakan."
+
+  LoginCredentials:
+    type: object
+    required:
+      - username
+      - password
+    properties:
+      username:
+        type: string
+        example: perawat_ahli
+      password:
+        type: string
+        format: password
+        example: password123
+
+  Patient:
+    type: object
+    properties:
+      id:
+        type: integer
+      no_rekam_medis:
+        type: string
+      assesment_id:
+        type: integer
+      nama:
+        type: string
+      tgl_lahir:
+        type: string
+        format: date
+      jenis_kelamin:
+        type: string
+      alamat:
+        type: string
+      agama:
+        type: string
+      pekerjaan:
+        type: string
+      status_perkawinan:
+        type: string
+      penanggung_jawab:
+        type: string
+      hubungan_penanggung_jawab:
+        type: string
+      kontak_penanggung_jawab:
+        type: string
+      status_rawat:
+        type: string
+
+  CPPT:
+    type: object
+    properties:
+      id:
+        type: integer
+      patient_id:
+        type: integer
+      tanggal:
+        type: string
+        format: date-time
+      user_id:
+        type: integer
+      subjective:
+        type: string
+      objective:
+        type: string
+      assessment:
+        type: string
+      plan:
+        type: string
+      keterangan:
+        type: string
+      dokter:
+        type: string
+      signature:
+        type: string
+
+  Laporan:
+    type: object
+    properties:
+      id:
+        type: integer
+      patient_id:
+        type: integer
+      cppt_id:
+        type: integer
+      tanggal:
+        type: string
+        format: date-time
+      user_id:
+        type: integer
+      subjective:
+        type: string
+      objective:
+        type: string
+      assessment:
+        type: string
+      plan:
+        type: string
+      keterangan:
+        type: string
+      dokter:
+        type: string
+      signature:
+        type: string
+      tindakan_lanjutan:
+        type: string
+      SDKI:
+        type: string
+      SLKI:
+        type: string
+      SIKI:
+        type: string
+
+  Assesment:
+    type: object
+    properties:
+      id:
+        type: integer
+      tanggal:
+        type: string
+        format: date-time
+      perawat:
+        type: string
+      data:
+        type: object
+        description: "Struktur JSON dari hasil asesmen."
+
+  Error:
+    type: object
+    properties:
+      error:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+  
+  Query:
+    type: object
+    properties:
+      query:
+        type: string
+        description: "Teks atau kueri untuk diproses oleh AI atau pencarian."
+
+paths:
+  /auth/register:
+    post:
+      tags:
+        - Auth
+      summary: Registrasi pengguna baru
+      security: []
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: '#/definitions/NewUser'
+      responses:
+        '201':
+          description: Registrasi berhasil
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+              access_token:
+                type: string
+        '400':
+          description: Data tidak lengkap atau format salah
+        '409':
+          description: Username atau email sudah ada
+
+  /auth/login:
+    post:
+      tags:
+        - Auth
+      summary: Login pengguna
+      security: []
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: '#/definitions/LoginCredentials'
+      responses:
+        '200':
+          description: Login berhasil
+          schema:
+            type: object
+            properties:
+              access_token:
+                type: string
+        '401':
+          description: Username atau password salah
+
+  /auth/profile:
+    get:
+      tags:
+        - Auth
+      summary: Mendapatkan profil pengguna yang sedang login
+      responses:
+        '200':
+          description: Berhasil mendapatkan profil
+          schema:
+            $ref: '#/definitions/User'
+        '404':
+          description: Pengguna tidak ditemukan
+
+  /users/:
+    get:
+      tags:
+        - Users
+      summary: Mendapatkan semua pengguna (Admin only)
+      responses:
+        '200':
+          description: Daftar semua pengguna
+          schema:
+            type: array
+            items:
+              $ref: '#/definitions/User'
+    post:
+      tags:
+        - Users
+      summary: Membuat pengguna baru
+      security: [] # Endpoint ini tidak memiliki dekorator JWT
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: '#/definitions/NewUser'
+      responses:
+        '201':
+          description: Pengguna berhasil dibuat
+        '400':
+          description: Data tidak lengkap
+        '409':
+          description: Username atau email sudah ada
+
+  /users/{user_id}:
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        type: integer
+    get:
+      tags:
+        - Users
+      summary: Mendapatkan pengguna berdasarkan ID
+      responses:
+        '200':
+          description: Data pengguna
+          schema:
+            $ref: '#/definitions/User'
+    put:
+      tags:
+        - Users
+      summary: Memperbarui data pengguna
+      parameters:
+        - in: body
+          name: body
+          schema:
+            type: object
+            properties:
+              username:
+                type: string
+              email:
+                type: string
+              password:
+                type: string
+              role:
+                type: string
+      responses:
+        '200':
+          description: Pengguna berhasil diperbarui
+    delete:
+      tags:
+        - Users
+      summary: Menghapus pengguna (Admin only)
+      responses:
+        '200':
+          description: Pengguna berhasil dihapus
+
+  /patients/:
+    get:
+      tags:
+        - Patients
+      summary: Mendapatkan daftar semua pasien
+      security: []
+      responses:
+        '200':
+          description: Sukses
+          schema:
+            type: array
+            items:
+              $ref: '#/definitions/Patient'
+    post:
+      tags:
+        - Patients
+      summary: Membuat pasien baru dari data asesmen
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            properties:
+              id_assesment:
+                type: integer
+              nama:
+                type: string
+      responses:
+        '201':
+          description: Pasien berhasil dibuat
+
+  /patients/{patient_id}:
+    parameters:
+      - name: patient_id
+        in: path
+        required: true
+        type: integer
+    get:
+      tags:
+        - Patients
+      summary: Mendapatkan detail pasien
+      security: []
+      responses:
+        '200':
+          description: Sukses
+    put:
+      tags:
+        - Patients
+      summary: Memperbarui data pasien
+      parameters:
+        - in: body
+          name: body
+          schema:
+            $ref: '#/definitions/Patient'
+      responses:
+        '200':
+          description: Pasien berhasil diperbarui
+    delete:
+      tags:
+        - Patients
+      summary: Menghapus data pasien
+      responses:
+        '200':
+          description: Pasien berhasil dihapus
+
+  /cppt/:
+    get:
+      tags:
+        - CPPT
+      summary: Mendapatkan semua data CPPT
+      security: []
+      responses:
+        '200':
+          description: Sukses
+    post:
+      tags:
+        - CPPT
+      summary: Membuat entri CPPT baru menggunakan AI
+      security: [] # Endpoint ini tidak memiliki dekorator JWT
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            properties:
+              query:
+                type: string
+              patient_id:
+                type: integer
+              perawat_id:
+                type: integer
+      responses:
+        '201':
+          description: CPPT berhasil dibuat
+
+  /cppt/search:
+    post:
+      tags:
+        - CPPT
+      summary: Mencari data CPPT
+      security: []
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: '#/definitions/Query'
+      responses:
+        '200':
+          description: Hasil pencarian
+
+  /cppt/{cppt_id}:
+    parameters:
+      - name: cppt_id
+        in: path
+        required: true
+        type: integer
+    get:
+      tags:
+        - CPPT
+      summary: Mendapatkan detail CPPT
+      security: []
+      responses:
+        '200':
+          description: Sukses
+    put:
+      tags:
+        - CPPT
+      summary: Memperbarui CPPT
+      security: []
+      parameters:
+        - in: body
+          name: body
+          schema:
+            $ref: '#/definitions/CPPT'
+      responses:
+        '200':
+          description: CPPT berhasil diperbarui
+    delete:
+      tags:
+        - CPPT
+      summary: Menghapus CPPT
+      security: []
+      responses:
+        '200':
+          description: CPPT berhasil dihapus
+
+  /laporan/:
+    get:
+      tags:
+        - Laporan
+      summary: Mendapatkan semua laporan
+      security: []
+      responses:
+        '200':
+          description: Sukses
+    post:
+      tags:
+        - Laporan
+      summary: Membuat laporan baru dengan bantuan AI
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            properties:
+              query:
+                type: string
+              cppt_id:
+                type: integer
+              patient_id:
+                type: integer
+              perawat_id:
+                type: integer
+      responses:
+        '201':
+          description: Laporan berhasil dibuat
+
+  /laporan/search:
+    post:
+      tags:
+        - Laporan
+      summary: Mencari dan menghasilkan data laporan potensial dengan AI
+      security: []
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: '#/definitions/Query'
+      responses:
+        '200':
+          description: Hasil pencarian
+
+  /laporan/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        type: integer
+    get:
+      tags:
+        - Laporan
+      summary: Mendapatkan detail laporan
+      security: []
+      responses:
+        '200':
+          description: Sukses
+    put:
+      tags:
+        - Laporan
+      summary: Memperbarui laporan
+      parameters:
+        - in: body
+          name: body
+          schema:
+            $ref: '#/definitions/Laporan'
+      responses:
+        '200':
+          description: Laporan berhasil diperbarui
+    delete:
+      tags:
+        - Laporan
+      summary: Menghapus laporan
+      responses:
+        '200':
+          description: Laporan berhasil dihapus
+
+  /assesments/:
+    get:
+      tags:
+        - Assesments
+      summary: Mendapatkan semua data asesmen
+      security: []
+      responses:
+        '200':
+          description: Sukses
+    post:
+      tags:
+        - Assesments
+      summary: Membuat asesmen baru dengan AI
+      security: []
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            properties:
+              query:
+                type: string
+              perawat:
+                type: string
+      responses:
+        '201':
+          description: Asesmen berhasil dibuat
+
+  /assesments/search:
+    post:
+      tags:
+        - Assesments
+      summary: Mencari data asesmen
+      security: []
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: '#/definitions/Query'
+      responses:
+        '200':
+          description: Hasil pencarian
+
+  /assesments/{assesment_id}:
+    parameters:
+      - name: assesment_id
+        in: path
+        required: true
+        type: integer
+    get:
+      tags:
+        - Assesments
+      summary: Mendapatkan detail asesmen
+      security: []
+      responses:
+        '200':
+          description: Sukses
+    put:
+      tags:
+        - Assesments
+      summary: Memperbarui asesmen
+      security: []
+      parameters:
+        - in: body
+          name: body
+          schema:
+            $ref: '#/definitions/Assesment'
+      responses:
+        '200':
+          description: Asesmen berhasil diperbarui
+    delete:
+      tags:
+        - Assesments
+      summary: Menghapus asesmen
+      security: []
+      responses:
+        '200':
+          description: Asesmen berhasil dihapus
+
+  /pdf/process-assesmen:
+    post:
+      tags:
+        - PDF Processing
+      summary: Mengunggah dan memproses PDF asesmen
+      consumes:
+        - multipart/form-data
+      parameters:
+        - name: file
+          in: formData
+          description: File PDF yang akan diunggah.
+          required: true
+          type: file
+      responses:
+        '200':
+          description: PDF berhasil diproses
+
+  /pdf/process-lab:
+    post:
+      tags:
+        - PDF Processing
+      summary: Mengunggah dan memproses PDF hasil lab
+      consumes:
+        - multipart/form-data
+      parameters:
+        - name: file
+          in: formData
+          description: File PDF yang akan diunggah.
+          required: true
+          type: file
+        - name: cppt_id
+          in: formData
+          description: ID CPPT terkait.
+          required: false
+          type: integer
+      responses:
+        '200':
+          description: PDF berhasil diproses
+
+  /pdf/process-permenkes:
+    post:
+      tags:
+        - PDF Processing
+      summary: Mengunggah dan memproses PDF Permenkes
+      consumes:
+        - multipart/form-data
+      parameters:
+        - name: file
+          in: formData
+          description: File PDF yang akan diunggah.
+          required: true
+          type: file
+      responses:
+        '200':
+          description: PDF berhasil diproses
+
+  /pdf/process-siki-slki-sdki:
+    post:
+      tags:
+        - PDF Processing
+      summary: Mengunggah dan memproses PDF SIKI/SLKI/SDKI
+      consumes:
+        - multipart/form-data
+      parameters:
+        - name: file
+          in: formData
+          description: File PDF yang akan diunggah.
+          required: true
+          type: file
+      responses:
+        '200':
+          description: PDF berhasil diproses
+

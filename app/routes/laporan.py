@@ -72,6 +72,7 @@ def get_laporans():
             "dokter": l.dokter,
             "signature": l.signature,
             "tindakan_lanjutan": l.tindakan_lanjutan,
+            "SDKI": l.SDKI,
             "SLKI": l.SLKI,
             "SIKI": l.SIKI,
         }
@@ -122,6 +123,7 @@ def create_laporan():
                     Kamu adalah asisten medis.
                     Buat JSON dengan field:
                     - tindakan_lanjutan
+                    - SDKI 
                     - SLKI
                     - SIKI
 
@@ -163,6 +165,7 @@ def create_laporan():
         dokter=cppt.dokter,
         signature=cppt.signature,
         tindakan_lanjutan=parsed.get("tindakan_lanjutan"),
+        SDKI=parsed.get("SDKI"),
         SLKI=parsed.get("SLKI"),
         SIKI=parsed.get("SIKI"),
     )
@@ -209,6 +212,7 @@ def search_laporan():
 Kamu adalah asisten medis.
 Buat JSON dengan field:
 - tindakan_lanjutan
+- SDKI
 - SLKI
 - SIKI
 
@@ -236,6 +240,7 @@ Jawab hanya dengan JSON valid.
         "data": {
             "query": query,
             "tindakan_lanjutan": parsed.get("tindakan_lanjutan"),
+            "SDKI": parsed.get("SDKI"),
             "SLKI": parsed.get("SLKI"),
             "SIKI": parsed.get("SIKI"),
         }
@@ -261,6 +266,7 @@ def get_laporan(id):
         "dokter": laporan.dokter,
         "signature": laporan.signature,
         "tindakan_lanjutan": laporan.tindakan_lanjutan,
+        "SDKI": laporan.SLKI,
         "SLKI": laporan.SLKI,
         "SIKI": laporan.SIKI,
     }

@@ -47,7 +47,6 @@ def get_assesments():
     data = [
         {
             "id": a.id,
-            "patient_id": a.patient_id,
             "tanggal": a.tanggal.isoformat(),
             "perawat": a.perawat,
             "data": a.data,
@@ -62,13 +61,23 @@ def get_assesment(assesment_id):
     assesment = Assesment.query.get(assesment_id)
     if not assesment:
         return jsonify({"status": 404, "message": "Assesment not found"}), 404
+    try:
+        data = assesment.data
+        if isinstance(data, str):
+            import json
+            if data.startswith("```json"):
+                data = data[len("```json"):].strip()
+            if data.endswith("```"):
+                data = data[:-3].strip()
+            json_ku = json.loads(data)
+    except Exception:
+        return jsonify({"status": 500, "message": "Invalid JSON in assesment", "data": data}), 500
 
     data = {
         "id": assesment.id,
-        "patient_id": assesment.patient_id,
         "tanggal": assesment.tanggal.isoformat(),
         "perawat": assesment.perawat,
-        "data": assesment.data,
+        "data": json_ku,
     }
     return jsonify({"status": 200, "message": "Success", "data": data}), 200
 
@@ -76,7 +85,6 @@ def get_assesment(assesment_id):
 @assesment_bp.route("/", methods=["POST"])
 def create_assesment():
     payload = request.get_json()
-
     if not payload or not payload.get("query") or  not payload.get("perawat"):
         return jsonify({"status": 400, "message": "Fields required: query, patient_id, perawat"}), 400
 
@@ -86,8 +94,6 @@ def create_assesment():
 
     query = payload["query"]
     perawat = payload["perawat"]
-
-
     query_vector = model.encode([query], convert_to_numpy=True).astype("float32")
 
     try:

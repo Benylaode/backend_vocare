@@ -87,6 +87,7 @@ class Laporan(db.Model):
     signature = db.Column(db.Text, nullable=True)
 
     tindakan_lanjutan = db.Column(db.Text, nullable=True)  
+    SDKI = db.Column(db.Text, nullable=True)     
     SLKI = db.Column(db.Text, nullable=True)              
     SIKI = db.Column(db.Text, nullable=True)               
 
