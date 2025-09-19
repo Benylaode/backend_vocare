@@ -23,7 +23,8 @@ def register():
     db.session.commit()
 
     access_token = create_access_token(
-        identity={"id": new_user.id, "role": new_user.role.name}
+        identity=str(new_user.id),
+        additional_claims={"role": new_user.role.name}
     )
 
     return jsonify({
