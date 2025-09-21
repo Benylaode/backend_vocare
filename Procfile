@@ -1,2 +1,1 @@
-web: python run.py
-
+web: waitress-serve --host=0.0.0.0 --port=$PORT run:app
