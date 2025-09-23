@@ -83,12 +83,13 @@ def get_assesment(assesment_id):
 
 
 @assesment_bp.route("/", methods=["POST"])
+@assesment_bp.route("/", methods=["POST"])
 def create_assesment():
     payload = request.get_json()
-    if not payload or not payload.get("query") or  not payload.get("perawat"):
+    if not payload or not payload.get("query") or not payload.get("perawat"):
         return jsonify({"status": 400, "message": "Fields required: query, patient_id, perawat"}), 400
 
-
+    # Cek apakah FAISS index sudah ada
     if FAISS_INDEX_FILE and not os.path.exists(FAISS_INDEX_FILE):
         return jsonify({"status": 210, "message": "belum mengupload data assesmen"}), 400
 
@@ -96,21 +97,51 @@ def create_assesment():
     perawat = payload["perawat"]
     query_vector = model.encode([query], convert_to_numpy=True).astype("float32")
 
+    # --- Bagian Retrieval ---
+    retrieved_data = []
     try:
+        initialize_faiss_index()
+
+        if FAISS_INDEX.ntotal > 0: 
+            k = 3  # ambil 3 terdekat
+            D, I = FAISS_INDEX.search(query_vector, k)
+
+            for idx in I[0]:
+                if idx != -1:
+                    asses = Assesment.query.get(int(idx))
+                    if asses:
+                        retrieved_data.append(asses.data)
+    except Exception as e:
+        return jsonify({"status": 500, "message": f"FAISS retrieval failed: {str(e)}"}), 500
+
+    context = "\n".join(retrieved_data) if retrieved_data else "Tidak ada data relevan yang ditemukan."
+
+    try:
+        prompt = f"""
+        Berikut adalah konteks dari data assesmen sebelumnya:
+        {context}
+
+        Sekarang, susun JSON terstruktur yang mengisi semua field ASESMEN AWAL KEPERAWATAN RAWAT INAP.
+        Tambahkan field: alamat, pekerjaan, status_perkawinan, penanggung_jawab, hubungan_penanggung_jawab, 
+        kontak_penanggung_jawab. Masukkan ke bagian informasi umum.
+        Jika field agama sudah ada di tempat lain maka tambahkan saja berdasarkan teks berikut.
+
+        Query:
+        {query}
+        """
+
         completion = client.chat.completions.create(
             model="deepseek/deepseek-chat-v3.1:free",
             messages=[
-                {
-                    "role": "system",
-                    "content": "Susun JSON terstruktur yang mengisi semua field ASESMEN AWAL KEPERAWATAN RAWAT INAP dengan tambahan filed berikut alamat pekerjaan status_perkawinan penanggung_jawab hubungan_penanggung_jawab kontak_penanggung_jawab masuk ke bagian informasi umum dan agama jika filed agama sudah ada di tempat lain maka tambahkan saja berdasarkan teks berikut.",
-                },
-                {"role": "user", "content": query},
+                {"role": "system", "content": "Anda adalah asisten medis yang menyusun data asesmen."},
+                {"role": "user", "content": prompt},
             ],
         )
         ai_json = completion.choices[0].message.content
     except Exception as e:
         return jsonify({"status": 500, "message": f"AI processing failed: {str(e)}"}), 500
 
+    # --- Simpan ke DB ---
     new_assesment = Assesment(
         perawat=perawat,
         tanggal=datetime.utcnow(),
@@ -119,9 +150,12 @@ def create_assesment():
     db.session.add(new_assesment)
     db.session.commit()
 
-    initialize_faiss_index()
-    FAISS_INDEX.add_with_ids(query_vector, np.array([new_assesment.id]))
-    save_faiss_index()
+    # --- Update FAISS Index ---
+    try:
+        FAISS_INDEX.add_with_ids(query_vector, np.array([new_assesment.id]))
+        save_faiss_index()
+    except Exception as e:
+        return jsonify({"status": 500, "message": f"FAISS update failed: {str(e)}"}), 500
 
     return jsonify(
         {
@@ -135,6 +169,7 @@ def create_assesment():
             },
         }
     ), 201
+
 
 
 @assesment_bp.route("/<int:assesment_id>", methods=["PUT"])
