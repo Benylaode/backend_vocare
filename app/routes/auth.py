@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from app.model import db, User
 from flask_jwt_extended import get_jwt_identity, get_jwt
+from datetime import timedelta
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -45,7 +46,8 @@ def login():
 
     access_token = create_access_token(
         identity=str(user.id),
-        additional_claims={"role": user.role.name}
+        additional_claims={"role": user.role.name},
+        expires_delta=timedelta(hours=1)
     )
 
     return jsonify({
