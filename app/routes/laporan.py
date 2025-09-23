@@ -178,6 +178,7 @@ def create_laporan():
         "data": {
             "id": new_laporan.id,
             "tindakan_lanjutan": new_laporan.tindakan_lanjutan,
+            "SDKI": new_laporan.SDKI,
             "SLKI": new_laporan.SLKI,
             "SIKI": new_laporan.SIKI,
         }
