@@ -83,83 +83,91 @@ def get_assesment(assesment_id):
 
 
 @assesment_bp.route("/", methods=["POST"])
-def create_patient():
+def create_assesment():
     payload = request.get_json()
+    if not payload or not payload.get("query") or not payload.get("perawat"):
+        return jsonify({"status": 400, "message": "Fields required: query, patient_id, perawat"}), 400
 
-    if not payload or not payload.get("id_assesment") or not payload.get("nama"):
-        return jsonify({"status": 400, "message": "Fields required: id_assesment, nama"}), 400
+    # Cek apakah FAISS index sudah ada
+    if FAISS_INDEX_FILE and not os.path.exists(FAISS_INDEX_FILE):
+        return jsonify({"status": 210, "message": "belum mengupload data assesmen"}), 400
 
-    id_assesment = payload["id_assesment"]
-    nama = payload["nama"]
+    query = payload["query"]
+    perawat = payload["perawat"]
+    query_vector = model.encode([query], convert_to_numpy=True).astype("float32")
 
-    assesment = Assesment.query.filter_by(id=id_assesment).first()
-    if not assesment:
-        return jsonify({"status": 404, "message": "Assesment not found"}), 404
+    # --- Bagian Retrieval ---
+    retrieved_data = []
+    try:
+        initialize_faiss_index()
+
+        if FAISS_INDEX.ntotal > 0: 
+            k = 3  # ambil 3 terdekat
+            D, I = FAISS_INDEX.search(query_vector, k)
+
+            for idx in I[0]:
+                if idx != -1:
+                    asses = Assesment.query.get(int(idx))
+                    if asses:
+                        retrieved_data.append(asses.data)
+    except Exception as e:
+        return jsonify({"status": 500, "message": f"FAISS retrieval failed: {str(e)}"}), 500
+
+    context = "\n".join(retrieved_data) if retrieved_data else "Tidak ada data relevan yang ditemukan."
 
     try:
-        data = assesment.data
-        if isinstance(data, str):
-            import json
-            if data.startswith("```json"):
-                data = data[len("```json"):].strip()
-            if data.endswith("```"):
-                data = data[:-3].strip()
-            data = json.loads(data)
-    except Exception:
-        return jsonify({"status": 500, "message": "Invalid JSON in assesment"}), 500
+        prompt = f"""
+        Berikut adalah konteks dari data assesmen sebelumnya:
+        {context}
 
-    if Patient.query.filter_by(assesment_id=id_assesment).first():
-        return jsonify({"status": 400, "message": "Patient with this id_assesment already exists"}), 400
+        Sekarang, susun JSON terstruktur yang mengisi semua field ASESMEN AWAL KEPERAWATAN RAWAT INAP.
+        Tambahkan field: alamat, pekerjaan, status_perkawinan, penanggung_jawab, hubungan_penanggung_jawab, 
+        kontak_penanggung_jawab. Masukkan ke bagian informasi umum.
+        Jika field agama sudah ada di tempat lain maka tambahkan saja berdasarkan teks berikut.
 
-    info_umum = data.get("asesmen_awal_keperawatan", {}).get("informasi_umum", {})
+        Query:
+        {query}
+        """
 
-    nama_pasien = info_umum.get("nama") or info_umum.get("nama_pasien") or nama
+        completion = client.chat.completions.create(
+            model="deepseek/deepseek-chat-v3.1:free",
+            messages=[
+                {"role": "system", "content": "Anda adalah asisten medis yang menyusun data asesmen."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        ai_json = completion.choices[0].message.content
+    except Exception as e:
+        return jsonify({"status": 500, "message": f"AI processing failed: {str(e)}"}), 500
 
-    no_rm = info_umum.get("no_rm") or info_umum.get("kode_rm")
-
-    tgl_lahir = info_umum.get("tanggal_lahir")
-    if tgl_lahir and isinstance(tgl_lahir, str):
-        try:
-            from datetime import datetime
-            tgl_lahir = datetime.strptime(tgl_lahir, "%d %B %Y").date()
-        except Exception:
-            tgl_lahir = None
-
-    pj = info_umum.get("penanggung_jawab")
-    if isinstance(pj, dict):
-        nama_pj = pj.get("nama")
-        hubungan_pj = pj.get("hubungan")
-        kontak_pj = pj.get("kontak")
-    else:
-        nama_pj = pj
-        hubungan_pj = info_umum.get("hubungan_penanggung_jawab")
-        kontak_pj = info_umum.get("kontak_penanggung_jawab")
-
-    new_patient = Patient(
-        assesment_id=id_assesment,
-        no_rekam_medis=no_rm,
-        nama=nama_pasien,
-        tgl_lahir=tgl_lahir,
-        jenis_kelamin=info_umum.get("jenis_kelamin"),
-        alamat=info_umum.get("alamat"),
-        agama=info_umum.get("agama"),
-        pekerjaan=info_umum.get("pekerjaan"),
-        status_perkawinan=info_umum.get("status_perkawinan"),
-        penanggung_jawab=nama_pj,
-        hubungan_penanggung_jawab=hubungan_pj,
-        kontak_penanggung_jawab=kontak_pj,
-        status_rawat="rawat_inap"  # default untuk pasien baru
+    # --- Simpan ke DB ---
+    new_assesment = Assesment(
+        perawat=perawat,
+        tanggal=datetime.utcnow(),
+        data=ai_json,
     )
-
-    db.session.add(new_patient)
+    db.session.add(new_assesment)
     db.session.commit()
 
-    return jsonify({
-        "status": 201,
-        "message": "Patient created from assesment",
-        "data": {"id": new_patient.id}
-    }), 201
+    # --- Update FAISS Index ---
+    try:
+        FAISS_INDEX.add_with_ids(query_vector, np.array([new_assesment.id]))
+        save_faiss_index()
+    except Exception as e:
+        return jsonify({"status": 500, "message": f"FAISS update failed: {str(e)}"}), 500
 
+    return jsonify(
+        {
+            "status": 201,
+            "message": "Assesment created successfully",
+            "data": {
+                "id": new_assesment.id,
+                "perawat": perawat,
+                "tanggal": new_assesment.tanggal.isoformat(),
+                "data": ai_json,
+            },
+        }
+    ), 201
 
 
 
