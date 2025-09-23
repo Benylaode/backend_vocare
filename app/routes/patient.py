@@ -90,6 +90,7 @@ def create_patient():
 
     # ambil nama: bisa "nama" atau "nama_pasien"
     nama_pasien = info_umum.get("nama") or info_umum.get("nama_pasien") or nama
+    no_rekam_medis = info_umum.get("no_rm") or info_umum.get("kode_rm") or nama
 
     # ambil tgl lahir (nama key di JSON: 'tanggal_lahir')
     tgl_lahir = info_umum.get("tanggal_lahir")
@@ -114,6 +115,7 @@ def create_patient():
     new_patient = Patient(
         assesment_id=id_assesment,
         nama=nama_pasien,
+        no_rekam_medis=no_rekam_medis,
         tgl_lahir=tgl_lahir,
         jenis_kelamin=info_umum.get("jenis_kelamin"),
         alamat=info_umum.get("alamat"),
