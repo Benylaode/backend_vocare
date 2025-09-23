@@ -83,7 +83,6 @@ def get_assesment(assesment_id):
 
 
 @assesment_bp.route("/", methods=["POST"])
-@assesment_bp.route("/", methods=["POST"])
 def create_assesment():
     payload = request.get_json()
     if not payload or not payload.get("query") or not payload.get("perawat"):
