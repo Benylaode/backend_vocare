@@ -104,7 +104,7 @@ class Patient(db.Model):
     __tablename__ = "patients"
 
     id = db.Column(db.Integer, primary_key=True)
-    no_rekam_medis = db.Column(db.String(50), unique=True, nullable=False)   
+    no_rekam_medis = db.Column(db.String(50), unique=True, nullable=True)   
     nama = db.Column(db.String(120), nullable=False)
     tgl_lahir = db.Column(db.Date, nullable=True)
     jenis_kelamin = db.Column(db.String(10), nullable=True)  

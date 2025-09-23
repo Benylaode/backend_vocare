@@ -61,8 +61,8 @@ def get_patient(patient_id):
 def create_patient():
     payload = request.get_json()
 
-    if not payload or not payload.get("id_assesment") or  not payload.get("nama"):
-        return jsonify({"status": 400, "message": "Fields required: query, patient_id, perawat"}), 400
+    if not payload or not payload.get("id_assesment") or not payload.get("nama"):
+        return jsonify({"status": 400, "message": "Fields required: id_assesment, nama"}), 400
 
     id_assesment = payload["id_assesment"]
     nama = payload["nama"]
@@ -70,14 +70,6 @@ def create_patient():
     assesment = Assesment.query.filter_by(id=id_assesment).first()
     if not assesment:
         return jsonify({"status": 404, "message": "Assesment not found"}), 404
-
-    assesment_id = assesment.id
-    if not assesment_id:
-        return jsonify({"status": 400, "message": "Field required: assesment_id", "data": None}), 400
-
-    assesment = Assesment.query.get(assesment_id)
-    if not assesment:
-        return jsonify({"status": 404, "message": "Assesment not found", "data": None}), 404
 
     try:
         data = assesment.data
@@ -88,43 +80,61 @@ def create_patient():
             if data.endswith("```"):
                 data = data[:-3].strip()
             data = json.loads(data)
-        print(data)
     except Exception:
-        return jsonify({"status": 500, "message": "Invalid JSON in assesment", "data": data}), 500
-
-
-    if not id_assesment or not nama:
-        return jsonify({"status": 400, "message": "Assesment JSON missing id_assesment or nama", "data": None}), 400
+        return jsonify({"status": 500, "message": "Invalid JSON in assesment"}), 500
 
     if Patient.query.filter_by(assesment_id=id_assesment).first():
-        return jsonify({"status": 400, "message": "Patient with this id_assesment already exists", "data": None}), 400
-
+        return jsonify({"status": 400, "message": "Patient with this id_assesment already exists"}), 400
 
     info_umum = data.get("asesmen_awal_keperawatan", {}).get("informasi_umum", {})
-    tgl_lahir = info_umum.get("tgl_lahir")
+
+    # ambil nama: bisa "nama" atau "nama_pasien"
+    nama_pasien = info_umum.get("nama") or info_umum.get("nama_pasien") or nama
+
+    # ambil tgl lahir (nama key di JSON: 'tanggal_lahir')
+    tgl_lahir = info_umum.get("tanggal_lahir")
     if tgl_lahir and isinstance(tgl_lahir, str):
-        tgl_lahir = datetime.fromisoformat(tgl_lahir).date()
+        try:
+            from datetime import datetime
+            tgl_lahir = datetime.strptime(tgl_lahir, "%d %B %Y").date()
+        except Exception:
+            tgl_lahir = None
+
+    # ambil penanggung jawab (bisa string atau object)
+    pj = info_umum.get("penanggung_jawab")
+    if isinstance(pj, dict):
+        nama_pj = pj.get("nama")
+        hubungan_pj = pj.get("hubungan")
+        kontak_pj = pj.get("kontak")
+    else:
+        nama_pj = pj
+        hubungan_pj = info_umum.get("hubungan_penanggung_jawab")
+        kontak_pj = info_umum.get("kontak_penanggung_jawab")
 
     new_patient = Patient(
-        no_rekam_medis=info_umum.get("no_rekam_medis"),
         assesment_id=id_assesment,
-        nama=nama,
+        nama=nama_pasien,
         tgl_lahir=tgl_lahir,
         jenis_kelamin=info_umum.get("jenis_kelamin"),
         alamat=info_umum.get("alamat"),
         agama=info_umum.get("agama"),
         pekerjaan=info_umum.get("pekerjaan"),
         status_perkawinan=info_umum.get("status_perkawinan"),
-        penanggung_jawab=info_umum.get("penanggung_jawab"),
-        hubungan_penanggung_jawab=info_umum.get("hubungan_penanggung_jawab"),
-        kontak_penanggung_jawab=info_umum.get("kontak_penanggung_jawab"),
+        penanggung_jawab=nama_pj,
+        hubungan_penanggung_jawab=hubungan_pj,
+        kontak_penanggung_jawab=kontak_pj,
         status_rawat="rawat_inap"
     )
 
     db.session.add(new_patient)
     db.session.commit()
 
-    return jsonify({"status": 201, "message": "Patient created from assesment", "data": {"id": new_patient.id}}), 201
+    return jsonify({
+        "status": 201,
+        "message": "Patient created from assesment",
+        "data": {"id": new_patient.id}
+    }), 201
+
 
 @patient_bp.route("/<int:patient_id>", methods=["PUT"])
 @jwt_required()
