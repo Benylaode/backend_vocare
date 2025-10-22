@@ -157,7 +157,7 @@ def create_cppt():
         4. Mapping konten:
         - subjective → keluhan pasien dari query.
         - objective → hasil pemeriksaan fisik, tanda vital, observasi.
-        - assessment → gabungkan semua diagnosa SDKI dari query assessment menjadi satu narasi (dipisahkan dengan koma atau kalimat).
+        - assessment → gabungkan semua diagnosa SDKI dari query assessment menjadi satu narasi (dipisahkan dengan koma atau kalimat) dimana diagnosa itu di dasarkan dari context.
         - plan → untuk setiap diagnosa di assessment, pilih satu atau lebih intervensi SIKI yang relevan. Tulis dalam bentuk narasi yang menjelaskan hubungan diagnosa dengan rencana perawatan.
         Contoh format narasi:
         "Untuk diagnosa [nama diagnosa]: [intervensi SIKI]. Untuk diagnosa [nama diagnosa lain]: [intervensi SIKI]."

@@ -168,7 +168,7 @@ def create_assesment():
         Pastikan semua field:
         informasi_umum, data_kunjungan, keluhan_utama, pemeriksaan_fisik, 
         tanda_vital, pemeriksaan_sistem, alergi, asesmen_nyeri, skrining_gizi (pastikan ada subfield berat_badan, tinggi_badan, IMT, status_gizi), 
-        skrining_risiko_jatuh, status_psikososial, rencana_perawatan, masalah_keperawatan, edukasi. dan Tamabhkan juga field yang selalu kosong bernama rencana_asuhan_keperawatan dan pastikan json tidak ada bagian <｜begin▁of▁sentence｜>
+        skrining_risiko_jatuh, status_psikososial, rencana_perawatan, masalah_keperawatan lakukan analisis dan dapatkan daftar masalahanya sesui dengan sdki, edukasi. dan Tamabhkan juga field yang selalu kosong bernama rencana_asuhan_keperawatan dan pastikan json tidak ada bagian <｜begin▁of▁sentence｜>
 
         Field di "informasi_umum" bersifat fleksibel: bisa ditambahkan alamat, pekerjaan, status_perkawinan, 
         penanggung_jawab, hubungan_penanggung_jawab, kontak_penanggung_jawab.
