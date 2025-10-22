@@ -1,16 +1,14 @@
 from flask import Blueprint, request, jsonify
+from app.model import db, Laporan, Patient, Intervensi, CPPT
+import os, json, pickle
+from datetime import datetime
+from dotenv import load_dotenv
+from openai import OpenAI
+from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
-import os
-from app.model import db, Laporan, CPPT, Patient
-import json
-from datetime import datetime
-from openai import OpenAI
-from dotenv import load_dotenv
-from flask_jwt_extended import jwt_required
-from app.utils import role_required
 
+# --- Load API Key ---
 load_dotenv()
 api_key = os.getenv("OPENROUTER_API_KEY_KU")
 
@@ -19,40 +17,24 @@ client = OpenAI(
     api_key=api_key,
 )
 
-laporan_bp = Blueprint("laporan_bp", __name__, url_prefix="/laporan")
+# --- Load Embedding Model ---
+model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
-EMBEDDING_DIM = 384
-siki_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+# --- File FAISS & Mapping ---
+FAISS_INDEX_FILE = "app/faisses/siki-slki-sdki/siki-slki-sdki.faiss"
+MAPPING_FILE = "app/faisses/siki-slki-sdki/siki-slki-sdki.pkl"
 
-SIKI_FILE = "app/siki-slki-sdki/siki-slki-sdki.faiss"
-PERMENKES_FILE = "app/permenkes/permenkes.faiss"
-
-FAISS_SIKI = None
-FAISS_PERMENKES = None
-
-
-def load_faiss_index(path):
-    if os.path.exists(path):
-        return faiss.read_index(path)
-    return faiss.IndexIDMap(faiss.IndexFlatL2(EMBEDDING_DIM))
-
-
-def initialize_indexes():
-    global FAISS_SIKI, FAISS_PERMENKES
-    if FAISS_SIKI is None:
-        FAISS_SIKI = load_faiss_index(SIKI_FILE)
-    if FAISS_PERMENKES is None:
-        FAISS_PERMENKES = load_faiss_index(PERMENKES_FILE)
-
-
-def search_index(index, query_vector, k=3):
-    """Cari embedding terdekat di FAISS index"""
-    if index.ntotal == 0:
+def search_with_faiss(query, index, id_to_text, k=3):
+    """Search di FAISS dan balikan teks mapping."""
+    if index is None or not id_to_text:
         return []
-    distances, indices = index.search(query_vector, k)
-    return [{"id": int(idx), "score": float(1 / (1 + dist))}
-            for idx, dist in zip(indices[0], distances[0]) if idx != -1]
+    q_emb = model.encode([query])
+    q_emb = np.array(q_emb).astype("float32")
+    D, I = index.search(q_emb, k)
+    return [id_to_text[i] for i in I[0] if i != -1 and i in id_to_text]
 
+# --- Blueprint ---
+laporan_bp = Blueprint("laporan_bp", __name__, url_prefix="/laporan")
 
 @laporan_bp.route("/", methods=["GET"])
 def get_laporans():
@@ -62,6 +44,7 @@ def get_laporans():
             "id": l.id,
             "patient_id": l.patient_id,
             "cppt_id": l.cppt_id,
+            "intervensi_id": l.intervensi_id,
             "tanggal": l.tanggal.isoformat(),
             "user_id": l.user_id,
             "subjective": l.subjective,
@@ -81,232 +64,211 @@ def get_laporans():
     return jsonify({"status": 200, "message": "Success", "data": data}), 200
 
 
+# ================== CREATE ==================
 @laporan_bp.route("/", methods=["POST"])
-@jwt_required()
-@role_required("admin", "user")
 def create_laporan():
     payload = request.get_json()
-    if not payload or not payload.get("query") or not payload.get("cppt_id") or not payload.get("patient_id") or not payload.get("perawat_id"):
-        return jsonify({"status": 400, "message": "Fields required: query, cppt_id, patient_id, perawat_id", "data": None}), 400
 
-    query = payload["query"]
-    cppt_id = payload["cppt_id"]
+    if not payload or not payload.get("query") or not payload.get("patient_id") or not payload.get("perawat_id") or not payload.get("intevensi_id"):
+        return jsonify({"status": 400, "message": "Fields required: query, patient_id, perawat_id, intevensi_id", "data": None}), 400
+
+    query = payload["query"] + ", "
     patient_id = payload["patient_id"]
     perawat_id = payload["perawat_id"]
+    cppt_id = payload["cppt_id"]
+    intervensi_id = payload["intevensi_id"]
 
     patient = Patient.query.get(patient_id)
     if not patient:
         return jsonify({"status": 404, "message": "Patient not found", "data": None}), 404
+
     cppt = CPPT.query.get(cppt_id)
+    query = query + f", assesment : {cppt.assessment}, plan : {cppt.plan}"
     if not cppt:
-        return jsonify({"status": 404, "message": "CPPT not found", "data": None}), 404
+        return jsonify({"status": 404, "message": "Intervensi not found", "data": None}), 404
 
-    initialize_indexes()
-    query_vector = siki_model.encode([query], convert_to_numpy=True).astype("float32")
+    # cek file FAISS
+    if os.path.exists(FAISS_INDEX_FILE) and os.path.exists(MAPPING_FILE):
+        with open(MAPPING_FILE, "rb") as f:
+            id_to_text = pickle.load(f)
+        index = faiss.read_index(FAISS_INDEX_FILE)
+        matches = search_with_faiss(query, index=index, id_to_text=id_to_text, k=5)
+    else:
+        return jsonify({"status": 210, "message": "belum mengupload data sdki-siki-slki", "data": None}), 404
 
-    siki_refs = search_index(FAISS_SIKI, query_vector, k=5)
-    permenkes_refs = search_index(FAISS_PERMENKES, query_vector, k=5)
-
-    references = {
-        "siki": siki_refs,
-        "permenkes": permenkes_refs
-    }
+    context_text = "\n\n".join(matches)
 
     try:
-        import json
         completion = client.chat.completions.create(
             model="deepseek/deepseek-chat-v3.1:free",
             messages=[
                 {
                     "role": "system",
-                    "content": f"""
-                    Kamu adalah asisten medis.
-                    Buat JSON dengan field:
-                    - tindakan_lanjutan
-                    - SDKI 
-                    - SLKI
-                    - SIKI
+                    "content": """Kamu adalah asisten medis yang membantu menyusun Laporan Keperawatan.
+        Output HARUS berupa JSON valid dengan struktur pasti tanpa sesuai struktur berikut (tanpa ```json, tanpa teks tambahan):
 
-                    Gunakan referensi standar dari PERMENKES & SIKI-SLKI-SDKI berikut:
-                    {json.dumps(references, indent=2)}
+        {
+        "subjective": "string",
+        "objective": "string",
+        "plan": "string",
+        "tindakan_lanjutan": "string",
+        "keterangan": "string",
+        "SDKI": ["string", "string"],
+        "SIKI": ["string", "string"],
+        "SLKI": ["string", "string"]
+        }
 
-                    Jawab hanya dengan JSON valid.
-                    """,
+        Aturan penting:
+        1. Semua value wajib berupa STRING tunggal atau NULL, kecuali SDKI, SIKI, SLKI yang berupa ARRAY of STRING.
+        2. Gunakan teks "query" dari perawat + referensi SDKI–SIKI–SLKI yang disediakan (jangan ambil dari luar).
+        3. Mapping:
+        - "subjective" → keluhan pasien dari query.
+        - "objective" → hasil pemeriksaan fisik, tanda vital, observasi dari query.
+        - "plan" → rencana tindakan dari query, hubungkan dengan intervensi SIKI bila ada kecocokan.
+        - "tindakan_lanjutan" → follow-up tambahan dari query.
+        - "keterangan" → catatan tambahan dari query.
+        - "SDKI" → pilih SATU ATAU LEBIH diagnosis keperawatan dari referensi yang ada pada quary di bagian assesment namun jika tidak ada di refrensi tampilkan saja yang ada. Ambil judul SDKI saja (tanpa penjelasan).
+        - "SIKI" → pilih SATU ATAU LEBIH intervensi keperawatan yang terkait dengan setiap SDKI terpilih. 
+                    Susun sebagai array of string, tiap string boleh berisi judul + penjelasan singkat.
+                    Hanya ambil dari baris referensi yang sama dengan SDKI dan tampilkan semua tulisan dan penjelasakn dan tindakan yang ada di kolom siki yang sejajar dengan semua SDKI yang diminta.
+        - "SLKI" → pilih SATU ATAU LEBIH luaran keperawatan yang terkait dengan SDKI & SIKI terpilih. 
+                    Susun sebagai array of string, tiap string berisi definisi + indikator hasil.
+                    Hanya ambil dari baris referensi yang sama.tampilkan semua tulisan dan penjelasakn dan tindakan yang ada di kolom siki yang sejajar dengan semua SDKI yang diminta.
+        4. Jangan menukar SDKI ↔ SIKI ↔ SLKI. Semua harus konsisten sesuai baris yang sama dalam referensi.
+        5. Rapikan hasil dalam bentuk narasi singkat, tapi tetap dalam format array string.
+        """
                 },
-                {"role": "user", "content": query},
+                {
+                    "role": "user",
+                    "content": f"Teks catatan:\n{query}\n\nReferensi SDKI–SIKI–SLKI yang boleh dipakai (hanya dari sini):\n{context_text}\n\nTolong hasilkan JSON sesuai aturan di atas."
+                }
             ],
         )
+
+
         ai_json = completion.choices[0].message.content
     except Exception as e:
         return jsonify({"status": 500, "message": f"AI processing failed: {str(e)}", "data": None}), 500
 
+    # parse hasil AI
     try:
-        parsed = ai_json
-        if isinstance(parsed, str):
-            import json
-            if parsed.startswith("```json"):
-                parsed = parsed[len("```json"):].strip()
-            if parsed.endswith("```"):
-                parsed = parsed[:-3].strip()
-            parsed = json.loads(parsed)
+        parsed = json.loads(ai_json)
     except Exception:
-        parsed = {"tindakan_lanjutan": None, "SLKI": None, "SIKI": None}
+        data = ai_json
+        if isinstance(data, str):
+            import json,re
+            ai_json = re.sub(r"^```(?:json)?|```$", "", ai_json.strip(), flags=re.MULTILINE)
+            data = re.sub(r"<\｜.*?？\｜>|<\｜.*?▁of▁sentence｜>", "", ai_json).strip()
 
-    new_laporan = Laporan(
+            parsed = json.loads(data)
+        else :
+            parsed = {
+                "subjective": query,
+                "objective": None,
+                "plan": None,
+                "tindakan_lanjutan": None,
+                "keterangan": ai_json,
+                "SDKI": None,
+                "SIKI": None,
+                "SLKI": None
+            }
+
+    # simpan ke database
+    laporan = Laporan(
         patient_id=patient_id,
-        cppt_id=cppt_id,
         user_id=perawat_id,
+        cppt_id=cppt_id,  # simpan relasi
         tanggal=datetime.utcnow(),
-        subjective=cppt.subjective,
-        objective=cppt.objective,
-        assessment=cppt.assessment,
-        plan=cppt.plan,
-        keterangan=cppt.keterangan,
-        dokter=cppt.dokter,
-        signature=cppt.signature,
+        subjective=parsed.get("subjective"),
+        objective=parsed.get("objective"),
+        assessment=cppt.assessment,  # ambil dari CPPT, bukan AI
+        plan=parsed.get("plan"),
         tindakan_lanjutan=parsed.get("tindakan_lanjutan"),
+        keterangan=parsed.get("keterangan"),
         SDKI=parsed.get("SDKI"),
-        SLKI=parsed.get("SLKI"),
         SIKI=parsed.get("SIKI"),
+        SLKI=parsed.get("SLKI"),
+        intervensi_id = intervensi_id
     )
-    db.session.add(new_laporan)
+    db.session.add(laporan)
     db.session.commit()
 
     return jsonify({
         "status": 201,
         "message": "Laporan created successfully",
-        "data": {
-            "id": new_laporan.id,
-            "tindakan_lanjutan": new_laporan.tindakan_lanjutan,
-            "SDKI": new_laporan.SDKI,
-            "SLKI": new_laporan.SLKI,
-            "SIKI": new_laporan.SIKI,
-        }
+        "data": laporan_to_dict(laporan)
     }), 201
 
-@laporan_bp.route("/search", methods=["POST"])
-def search_laporan():
-    payload = request.get_json()
-    if not payload or not payload.get("query"):
-        return jsonify({"status": 400, "message": "Field required: query", "data": None}), 400
-
-    query = payload["query"]
-
-    initialize_indexes()
-    query_vector = siki_model.encode([query], convert_to_numpy=True).astype("float32")
-
-    siki_refs = search_index(FAISS_SIKI, query_vector, k=5)
-    permenkes_refs = search_index(FAISS_PERMENKES, query_vector, k=5)
-
-    references = {
-        "siki": siki_refs,
-        "permenkes": permenkes_refs
-    }
-
-    try:
-        completion = client.chat.completions.create(
-            model="deepseek/deepseek-chat-v3.1:free",
-            messages=[
-                {
-                    "role": "system",
-                    "content": f"""
-Kamu adalah asisten medis.
-Buat JSON dengan field:
-- tindakan_lanjutan
-- SDKI
-- SLKI
-- SIKI
-
-Gunakan referensi standar dari PERMENKES & SIKI-SLKI-SDKI berikut:
-{json.dumps(references, indent=2)}
-
-Jawab hanya dengan JSON valid.
-""",
-                },
-                {"role": "user", "content": query},
-            ],
-        )
-        ai_json = completion.choices[0].message.content
-    except Exception as e:
-        return jsonify({"status": 500, "message": f"AI processing failed: {str(e)}", "data": None}), 500
-
-    try:
-        parsed = json.loads(ai_json)
-    except Exception:
-        parsed = {"tindakan_lanjutan": None, "SLKI": None, "SIKI": None}
-
-    return jsonify({
-        "status": 200,
-        "message": "Search result generated",
-        "data": {
-            "query": query,
-            "tindakan_lanjutan": parsed.get("tindakan_lanjutan"),
-            "SDKI": parsed.get("SDKI"),
-            "SLKI": parsed.get("SLKI"),
-            "SIKI": parsed.get("SIKI"),
-        }
-    }), 200
-
+# ================== READ ==================
 @laporan_bp.route("/<int:id>", methods=["GET"])
 def get_laporan(id):
     laporan = Laporan.query.get(id)
     if not laporan:
         return jsonify({"status": 404, "message": "Laporan not found", "data": None}), 404
+    return jsonify({"status": 200, "message": "success", "data": laporan_to_dict(laporan)}), 200
 
-    data = {
-        "id": laporan.id,
-        "patient_id": laporan.patient_id,
-        "cppt_id": laporan.cppt_id,
-        "tanggal": laporan.tanggal.isoformat(),
-        "user_id": laporan.user_id,
-        "subjective": laporan.subjective,
-        "objective": laporan.objective,
-        "assessment": laporan.assessment,
-        "plan": laporan.plan,
-        "keterangan": laporan.keterangan,
-        "dokter": laporan.dokter,
-        "signature": laporan.signature,
-        "tindakan_lanjutan": laporan.tindakan_lanjutan,
-        "SDKI": laporan.SLKI,
-        "SLKI": laporan.SLKI,
-        "SIKI": laporan.SIKI,
-    }
-    return jsonify({"status": 200, "message": "Success", "data": data}), 200
-
-
+# ================== UPDATE ==================
 @laporan_bp.route("/<int:id>", methods=["PUT"])
-@jwt_required()
-@role_required("admin", "user")
 def update_laporan(id):
     laporan = Laporan.query.get(id)
     if not laporan:
         return jsonify({"status": 404, "message": "Laporan not found", "data": None}), 404
 
     payload = request.get_json()
-    if not payload:
-        return jsonify({"status": 400, "message": "Request body required", "data": None}), 400
-
-    for field in [
-        "subjective", "objective", "assessment", "plan", "keterangan",
-        "dokter", "signature", "tindakan_lanjutan", "SLKI", "SIKI"
-    ]:
+    for field in ["subjective", "objective", "assessment", "plan", "tindakan_lanjutan", "keterangan", "SDKI", "SIKI", "SLKI"]:
         if field in payload:
             setattr(laporan, field, payload[field])
 
     db.session.commit()
+    return jsonify({"status": 200, "message": "Laporan updated successfully", "data": laporan_to_dict(laporan)}), 200
 
-    return jsonify({"status": 200, "message": "Laporan updated successfully", "data": {"id": laporan.id}}), 200
-
-
+# ================== DELETE ==================
 @laporan_bp.route("/<int:id>", methods=["DELETE"])
-@jwt_required()
-@role_required("admin", "user")
 def delete_laporan(id):
     laporan = Laporan.query.get(id)
     if not laporan:
         return jsonify({"status": 404, "message": "Laporan not found", "data": None}), 404
-
     db.session.delete(laporan)
     db.session.commit()
+    return jsonify({"status": 200, "message": "Laporan deleted successfully", "data": None}), 200
 
-    return jsonify({"status": 200, "message": "Laporan deleted successfully", "data": {"id": id}}), 200
+# ================== SEARCH ==================
+@laporan_bp.route("/search", methods=["GET"])
+def search_laporan():
+    keyword = request.args.get("q")
+    if not keyword:
+        return jsonify({"status": 400, "message": "Query parameter 'q' required", "data": None}), 400
+
+    results = Laporan.query.filter(
+        (Laporan.subjective.ilike(f"%{keyword}%")) |
+        (Laporan.objective.ilike(f"%{keyword}%")) |
+        (Laporan.assessment.ilike(f"%{keyword}%")) |
+        (Laporan.plan.ilike(f"%{keyword}%")) |
+        (Laporan.keterangan.ilike(f"%{keyword}%"))
+    ).all()
+
+    return jsonify({
+        "status": 200,
+        "message": "success",
+        "data": [laporan_to_dict(l) for l in results]
+    }), 200
+
+# ================== HELPER ==================
+def laporan_to_dict(laporan):
+    return {
+        "id": laporan.id,
+        "patient_id": laporan.patient_id,
+        "cppt_id": laporan.cppt_id,
+        "user_id": laporan.user_id,
+        "tanggal": laporan.tanggal.isoformat() if laporan.tanggal else None,
+        "subjective": laporan.subjective,
+        "objective": laporan.objective,
+        "assessment": laporan.assessment,
+        "plan": laporan.plan,
+        "tindakan_lanjutan": laporan.tindakan_lanjutan,
+        "keterangan": laporan.keterangan,
+        "SDKI": laporan.SDKI,
+        "SIKI": laporan.SIKI,
+        "SLKI": laporan.SLKI,
+        "intervensi_id": laporan.intervensi_id
+    }

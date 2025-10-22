@@ -74,25 +74,21 @@ def create_patient():
     try:
         data = assesment.data
         if isinstance(data, str):
-            import json
-            if data.startswith("```json"):
-                data = data[len("```json"):].strip()
-            if data.endswith("```"):
-                data = data[:-3].strip()
+            import json, re
+            data = re.sub(r"```(?:json)?|```", "", data).strip()
             data = json.loads(data)
     except Exception:
         return jsonify({"status": 500, "message": "Invalid JSON in assesment"}), 500
 
-    if Patient.query.filter_by(assesment_id=id_assesment).first():
-        return jsonify({"status": 400, "message": "Patient with this id_assesment already exists"}), 400
-
     info_umum = data.get("asesmen_awal_keperawatan", {}).get("informasi_umum", {})
 
-    # ambil nama: bisa "nama" atau "nama_pasien"
     nama_pasien = info_umum.get("nama") or info_umum.get("nama_pasien") or nama
-    no_rekam_medis = info_umum.get("no_rm") or info_umum.get("kode_rm") or nama
+    no_rekam_medis = info_umum.get("no_rm") or info_umum.get("kode_rm") or info_umum.get("nomor_rekam_medis") or None
 
-    # ambil tgl lahir (nama key di JSON: 'tanggal_lahir')
+    if Patient.query.filter((Patient.assesment_id == id_assesment) | 
+                            (Patient.no_rekam_medis == no_rekam_medis)).first():
+        return jsonify({"status": 400, "message": "Patient with this assesment_id or no_rekam_medis already exists"}), 400
+
     tgl_lahir = info_umum.get("tanggal_lahir")
     if tgl_lahir and isinstance(tgl_lahir, str):
         try:
@@ -101,7 +97,6 @@ def create_patient():
         except Exception:
             tgl_lahir = None
 
-    # ambil penanggung jawab (bisa string atau object)
     pj = info_umum.get("penanggung_jawab")
     if isinstance(pj, dict):
         nama_pj = pj.get("nama")
@@ -128,8 +123,16 @@ def create_patient():
         status_rawat="rawat_inap"
     )
 
-    db.session.add(new_patient)
-    db.session.commit()
+    try:
+        db.session.add(new_patient)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            "status": 400,
+            "message": "Failed to create patient",
+            "error": str(e)
+        }), 400
 
     return jsonify({
         "status": 201,

@@ -748,3 +748,96 @@ paths:
         '200':
           description: PDF berhasil diproses
 
+  /intervensi/:
+    get:
+      tags:
+        - Intervensi
+      summary: Mendapatkan semua intervensi
+      responses:
+        '200':
+          description: Daftar intervensi
+          schema:
+            type: array
+            items:
+              $ref: '#/definitions/Intervensi'
+
+    post:
+      tags:
+        - Intervensi
+      summary: Membuat intervensi baru dengan bantuan AI & referensi SIKI
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            required:
+              - query
+              - patient_id
+              - user_id
+            properties:
+              query:
+                type: string
+              patient_id:
+                type: integer
+              user_id:
+                type: integer
+      responses:
+        '201':
+          description: Intervensi berhasil dibuat
+
+  /intervensi/{intervensi_id}:
+    parameters:
+      - name: intervensi_id
+        in: path
+        required: true
+        type: integer
+    get:
+      tags:
+        - Intervensi
+      summary: Mendapatkan detail intervensi berdasarkan ID
+      responses:
+        '200':
+          description: Detail intervensi
+          schema:
+            $ref: '#/definitions/Intervensi'
+
+    put:
+      tags:
+        - Intervensi
+      summary: Memperbarui data intervensi berdasarkan ID
+      parameters:
+        - in: body
+          name: body
+          schema:
+            $ref: '#/definitions/Intervensi'
+      responses:
+        '200':
+          description: Intervensi berhasil diperbarui
+
+    delete:
+      tags:
+        - Intervensi
+      summary: Menghapus intervensi berdasarkan ID
+      responses:
+        '200':
+          description: Intervensi berhasil dihapus
+
+  /intervensi/search:
+    post:
+      tags:
+        - Intervensi
+      summary: Mencari intervensi berdasarkan teks implementasi atau evaluasi
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            $ref: '#/definitions/Query'
+      responses:
+        '200':
+          description: Hasil pencarian intervensi
+          schema:
+            type: array
+            items:
+              $ref: '#/definitions/Intervensi'

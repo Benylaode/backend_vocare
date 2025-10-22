@@ -3,6 +3,7 @@ from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identi
 from app.model import db, User
 from flask_jwt_extended import get_jwt_identity, get_jwt
 from datetime import timedelta
+from app.model import RoleEnum
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -18,7 +19,14 @@ def register():
     if User.query.filter_by(email=data["email"]).first():
         return jsonify({"error": "Email already exists"}), 400
 
-    new_user = User(username=data["username"], email=data["email"])
+
+    role = RoleEnum.user   
+
+    new_user = User(
+        username=data["username"],
+        email=data["email"],
+        role=role
+    )
     new_user.set_password(data["password"])
     db.session.add(new_user)
     db.session.commit()
@@ -54,7 +62,8 @@ def login():
         "access_token": access_token,
             "username": user.username,
             "email": user.email,
-            "role": user.role.name
+            "role": user.role.name,
+            "id": user.id
     }), 200
 
 

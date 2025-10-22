@@ -28,6 +28,8 @@ def create_app():
     from .routes.laporan import laporan_bp as laporan
     from .routes.cppt import cppt_bp as cppt
     from .routes.patient import patient_bp as patient
+    from .routes.intervensi import intervensi_bp as intervensi
+    app.register_blueprint(intervensi, url_prefix='/intervensi')
     app.register_blueprint(patient, url_prefix='/patients')
     app.register_blueprint(cppt, url_prefix='/cppt')
     app.register_blueprint(laporan, url_prefix='/laporan')
