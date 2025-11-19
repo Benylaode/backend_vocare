@@ -372,41 +372,23 @@ def update_assesment(assesment_id):
 
 # === DELETE ===
 @assesment_bp.route("/<int:assesment_id>", methods=["DELETE"])
-def delete_assesment(assesment_id):
-    assesment = Assesment.query.get(assesment_id)
-    if not assesment:
-        return jsonify({
-            "status": 404,
-            "message": "Assesment not found"
-        }), 404
-
+def delete_assesment(id):
     try:
-        # Ambil patient jika ada
-        patient = assesment.patient  # Bisa None
+        assesment = Assesment.query.get(id)
 
-        # Hapus assesment
+        # kalau assessment tidak ditemukan -> tetap dianggap sukses
+        if assesment is None:
+            return {"message": "Assessment not found but treated as deleted", "status": 200}
+
+        # hapus assessment
         db.session.delete(assesment)
-
-        # Jika patient ada → hapus juga
-        if patient is not None:
-            db.session.delete(patient)
-
         db.session.commit()
 
-        return jsonify({
-            "status": 200,
-            "message": "Assesment & related patient deleted",
-            "patient_deleted": patient is not None
-        }), 200
+        return {"message": "Assessment deleted successfully", "status": 200}
 
     except Exception as e:
         db.session.rollback()
-        return jsonify({
-            "status": 500,
-            "message": f"Delete failed: {str(e)}"
-        }), 500
-
-
+        return {"message": f"Delete failed: {str(e)}", "status": 500}
 
 
 
