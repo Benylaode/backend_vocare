@@ -371,15 +371,25 @@ def update_assesment(assesment_id):
 
 
 # === DELETE ===
-@assesment_bp.route("/<int:assesment_id>", methods=["DELETE"])
 def delete_assesment(assesment_id):
     assesment = Assesment.query.get(assesment_id)
     if not assesment:
         return jsonify({"status": 404, "message": "Assesment not found"}), 404
 
     try:
-        # Hapus dari DB
+        # Ambil patient terkait
+        patient = assesment.patient
+
+        # Cek apakah assesment ini adalah yang terakhir milik patient
+        delete_patient = False
+        if patient and len(patient.assesments) == 1:
+            delete_patient = True
+
+        # Hapus assesment
         db.session.delete(assesment)
+        if delete_patient:
+            db.session.delete(patient)
+
         db.session.commit()
 
         # Hapus dari FAISS index
@@ -400,4 +410,8 @@ def delete_assesment(assesment_id):
     except Exception as e:
         return jsonify({"status": 500, "message": f"Delete failed: {str(e)}"}), 500
 
-    return jsonify({"status": 200, "message": "Assesment deleted successfully"}), 200
+    return jsonify({
+        "status": 200,
+        "message": "Assesment deleted successfully",
+        "patient_deleted": delete_patient
+    }), 200
