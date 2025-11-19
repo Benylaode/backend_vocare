@@ -378,31 +378,31 @@ def delete_assesment(assesment_id):
         return jsonify({"status": 404, "message": "Assesment not found"}), 404
 
     try:
-        # Ambil patient jika ada
-        patient = assesment.patient
+        # assesment.patient adalah LIST karena relasi kamu rusak
+        patient_list = assesment.patient or []
 
-        # Tentukan apakah patient harus dihapus
-        delete_patient = (
-            patient is not None and 
-            len(patient.assesments) == 1
-        )
+        delete_patients = []
+
+        # Loop semua patient yang terhubung
+        for p in patient_list:
+            # Jika patient hanya punya assesment ini
+            if len(p.assesments) == 1:
+                delete_patients.append(p)
 
         # Hapus assesment
         db.session.delete(assesment)
 
-        # Hapus patient jika perlu
-        if delete_patient:
-            db.session.delete(patient)
+        # Hapus setiap patient yang boleh dihapus
+        for p in delete_patients:
+            db.session.delete(p)
 
-        # Commit DB
         db.session.commit()
 
     except Exception as e:
         db.session.rollback()
         return jsonify({"status": 500, "message": f"Delete failed: {str(e)}"}), 500
 
-    # --------- NON-CRITICAL OPS (tidak mengganggu proses utama) ------------
-    # Hapus dari FAISS index
+    # NON CRITICAL OPS (FAISS dan mapping)
     try:
         index = initialize_faiss_index()
         index.remove_ids(np.array([assesment_id], dtype=np.int64))
@@ -410,7 +410,6 @@ def delete_assesment(assesment_id):
     except Exception:
         pass
 
-    # Hapus mapping
     try:
         mapping = load_mapping()
         if assesment_id in mapping:
@@ -419,11 +418,11 @@ def delete_assesment(assesment_id):
                 pickle.dump(mapping, f)
     except Exception:
         pass
-    # -----------------------------------------------------------------------
 
     return jsonify({
         "status": 200,
         "message": "Assesment deleted successfully",
-        "patient_deleted": delete_patient
+        "deleted_patients": [p.id for p in delete_patients]
     }), 200
+
 
