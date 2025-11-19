@@ -27,6 +27,37 @@ EMBEDDING_DIM = 384
 FAISS_INDEX_FILE = "app/faisses/assesment/assesmen.faiss"
 PICKLE_FILE = "app/faisses/assesment/assesmen.pkl"
 
+import re
+
+def extract_medical_record_number(text):
+    """
+    Mencari nomor rekam medis dari text.
+    Pola umum: 6–12 digit berturut-turut.
+    """
+    # Cari angka panjang (6-12 digit)
+    match = re.search(r"\b(\d{6,12})\b", text)
+    return match.group(1) if match else None
+
+
+def query_contains_rm_keyword(text):
+    """
+    Mengecek apakah query mengandung kata kunci RM.
+    """
+    keywords = [
+        "nomor rekam medis",
+        "no rekam medis",
+        "no rm",
+        "norm",
+        "no. rm",
+        "no.rm",
+        "rm",
+        "rekam medis"
+    ]
+
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in keywords)
+
+
 def initialize_faiss_index():
     global FAISS_INDEX
     if FAISS_INDEX is None:
@@ -135,6 +166,20 @@ def create_assesment():
 
     query = payload["query"]
     perawat = payload["perawat"]
+
+    rm_in_query = extract_medical_record_number(query)
+    keyword_found = query_contains_rm_keyword(query)
+
+    if not keyword_found or not rm_in_query:
+        return jsonify({
+            "status": 400,
+            "message": (
+                "Query harus mencantumkan nomor rekam medis pasien. "
+                "Pastikan ada kata kunci seperti 'nomor rekam medis', 'no rm', atau angka RM."
+            )
+        }), 400
+    # ------------------------------------------------------
+
     query_vector = model.encode([query], convert_to_numpy=True).astype("float32")
 
     # --- Load FAISS index & mapping ---
@@ -148,7 +193,7 @@ def create_assesment():
     retrieved_data = []
     try:
         if index.ntotal > 0:
-            k = min(3, index.ntotal)  # ambil maksimal 3 chunk relevan
+            k = min(3, index.ntotal)
             D, I = index.search(query_vector, k)
             for idx in I[0]:
                 if idx != -1 and idx in mapping:
@@ -158,7 +203,7 @@ def create_assesment():
 
     context = "\n".join(retrieved_data) if retrieved_data else "Tidak ada data relevan yang ditemukan."
 
-    # --- Prompt ke AI untuk membuat JSON asesmen ---
+    # --- Prompt ke AI ---
     try:
         prompt = f"""
         Berdasarkan data historis asesmen sebelumnya:
@@ -168,12 +213,15 @@ def create_assesment():
         Root key: "asesmen_awal_keperawatan".
         Pastikan semua field:
         informasi_umum, data_kunjungan, keluhan_utama, pemeriksaan_fisik, 
-        tanda_vital, pemeriksaan_sistem, alergi, asesmen_nyeri, skrining_gizi (pastikan ada subfield berat_badan, tinggi_badan, IMT, status_gizi), 
-        skrining_risiko_jatuh, status_psikososial, rencana_perawatan, masalah_keperawatan lakukan analisis dan dapatkan daftar masalahanya sesui dengan sdki, edukasi. dan Tamabhkan juga field yang selalu kosong bernama rencana_asuhan_keperawatan dan pastikan json tidak ada bagian <｜begin▁of▁sentence｜>
+        tanda_vital, pemeriksaan_sistem, alergi, asesmen_nyeri, 
+        skrining_gizi (berat_badan, tinggi_badan, IMT, status_gizi), 
+        skrining_risiko_jatuh, status_psikososial, rencana_perawatan, 
+        masalah_keperawatan (analisis SDKI), edukasi, serta 
+        field kosong wajib bernama rencana_asuhan_keperawatan.
 
-        Field di "informasi_umum" bersifat fleksibel: bisa ditambahkan alamat, pekerjaan, status_perkawinan, 
-        penanggung_jawab, hubungan_penanggung_jawab, kontak_penanggung_jawab.
+        Pastikan JSON tidak ada bagian <｜begin▁of▁sentence｜>.
 
+        Nomor rekam medis pasien: {rm_in_query}
         Query baru pasien:
         {query}
         """
@@ -186,14 +234,13 @@ def create_assesment():
             ],
         )
         import re
-
         ai_json = completion.choices[0].message.content
         ai_json = re.sub(r"<\｜begin▁of▁sentence｜>", "", ai_json).strip()
 
     except Exception as e:
         return jsonify({"status": 500, "message": f"AI processing failed: {str(e)}"}), 500
 
-    # --- Simpan ke DB ---
+    # --- Save to DB ---
     new_assesment = Assesment(
         perawat=perawat,
         tanggal=datetime.utcnow(),
@@ -202,25 +249,23 @@ def create_assesment():
     db.session.add(new_assesment)
     db.session.commit()
 
-    # --- Update FAISS Index ---
+    # --- Update FAISS ---
     try:
         index.add_with_ids(query_vector, np.array([new_assesment.id]))
         save_faiss_index()
     except Exception as e:
         return jsonify({"status": 500, "message": f"FAISS update failed: {str(e)}"}), 500
 
-    return jsonify(
-        {
-            "status": 201,
-            "message": "Assesment created successfully",
-            "data": {
-                "id": new_assesment.id,
-                "perawat": perawat,
-                "tanggal": new_assesment.tanggal.isoformat(),
-                "data": ai_json,
-            },
-        }
-    ), 201
+    return jsonify({
+        "status": 201,
+        "message": "Assesment created successfully",
+        "data": {
+            "id": new_assesment.id,
+            "perawat": perawat,
+            "tanggal": new_assesment.tanggal.isoformat(),
+            "data": ai_json,
+        },
+    }), 201
 
 
 
