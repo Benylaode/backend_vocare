@@ -128,13 +128,9 @@ def create_laporan():
         - "plan" → rencana tindakan dari query, hubungkan dengan intervensi SIKI bila ada kecocokan.
         - "tindakan_lanjutan" → follow-up tambahan dari query.
         - "keterangan" → catatan tambahan dari query.
-        - "SDKI" → pilih SATU ATAU LEBIH diagnosis keperawatan dari referensi yang ada pada quary di bagian assesment namun jika tidak ada di refrensi tampilkan saja yang ada. Ambil judul SDKI saja (tanpa penjelasan) yang mana yang diambil disesuikan dengan daftar sdki pada conteks.
-        - "SIKI" → pilih SATU ATAU LEBIH intervensi keperawatan yang terkait dengan setiap SDKI terpilih. 
-                    Susun sebagai array of string, tiap string boleh berisi judul + penjelasan singkat.
-                    Hanya ambil dari baris referensi yang sama dengan SDKI dan tampilkan semua tulisan dan penjelasakn dan tindakan yang ada di kolom siki yang sejajar dengan semua SDKI yang diminta.
-        - "SLKI" → pilih SATU ATAU LEBIH luaran keperawatan yang terkait dengan SDKI & SIKI terpilih. 
-                    Susun sebagai array of string, tiap string berisi definisi + indikator hasil.
-                    Hanya ambil dari baris referensi yang sama.tampilkan semua tulisan dan penjelasakn dan tindakan yang ada di kolom siki yang sejajar dengan semua SDKI yang diminta.
+        - "SDKI" → Ambil semua keterangan dan penjelasan dari assesment.
+        - "SIKI" → ambil semua keterangna dan penjelasan dari plan
+        - "SLKI" → untuk setiap diagnosa di assessment, pilih satu atau lebih intervensi SLKI yang relevan. Tulis dalam bentuk narasi yang menjelaskan hubungan diagnosa dengan rencana perawatan.
         4. Jangan menukar SDKI ↔ SIKI ↔ SLKI. Semua harus konsisten sesuai baris yang sama dalam referensi.
         5. Rapikan hasil dalam bentuk narasi singkat, tapi tetap dalam format array string.
         """
