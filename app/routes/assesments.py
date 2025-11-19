@@ -377,16 +377,19 @@ def delete_assesment(assesment_id):
         return jsonify({"status": 404, "message": "Assesment not found"}), 404
 
     try:
-        # Ambil patient terkait
-        patient = assesment.patient
+        # Ambil patient jika ada
+        patient = getattr(assesment, "patient", None)
 
-        # Cek apakah assesment ini adalah yang terakhir milik patient
         delete_patient = False
-        if patient and len(patient.assesments) == 1:
-            delete_patient = True
+        if patient:
+            # Jika patient punya assesment hanya 1 (yang ini)
+            if len(patient.assesments) == 1:
+                delete_patient = True
 
         # Hapus assesment
         db.session.delete(assesment)
+
+        # Hapus patient hanya jika memang ada dan boleh dihapus
         if delete_patient:
             db.session.delete(patient)
 
@@ -415,3 +418,4 @@ def delete_assesment(assesment_id):
         "message": "Assesment deleted successfully",
         "patient_deleted": delete_patient
     }), 200
+
