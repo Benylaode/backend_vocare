@@ -378,7 +378,12 @@ def delete_assesment(assesment_id):
         return jsonify({"status": 404, "message": "Assesment not found"}), 404
 
     try:
-        # Hapus dari DB
+        # Jika assessment punya patient -> hapus patient juga
+        patient = getattr(assesment, "patient", None)
+        if patient:
+            db.session.delete(patient)
+
+        # Hapus assessment
         db.session.delete(assesment)
         db.session.commit()
 
@@ -387,13 +392,13 @@ def delete_assesment(assesment_id):
         try:
             index.remove_ids(np.array([assesment.id], dtype=np.int64))
             save_faiss_index()
-        except Exception:
+        except:
             pass
 
         # Hapus dari mapping
         mapping = load_mapping()
-        if assesment.id in mapping:
-            del mapping[assesment.id]
+        if assesment_id in mapping:
+            del mapping[assesment_id]
             with open(PICKLE_FILE, "wb") as f:
                 pickle.dump(mapping, f)
 
@@ -401,6 +406,7 @@ def delete_assesment(assesment_id):
         return jsonify({"status": 500, "message": f"Delete failed: {str(e)}"}), 500
 
     return jsonify({"status": 200, "message": "Assesment deleted successfully"}), 200
+
 
 
 
