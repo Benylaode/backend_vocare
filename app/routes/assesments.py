@@ -375,36 +375,37 @@ def update_assesment(assesment_id):
 def delete_assesment(assesment_id):
     assesment = Assesment.query.get(assesment_id)
     if not assesment:
-        return jsonify({"status": 404, "message": "Assesment not found"}), 404
+        return jsonify({
+            "status": 404,
+            "message": "Assesment not found"
+        }), 404
 
     try:
-        # Ambil patient jika assesment punya relasi
-        patient = assesment.patient  # bisa None
+        # Ambil patient jika ada
+        patient = assesment.patient  # Bisa None
 
-        delete_patient = False
-        if patient is not None:
-            # patient.assesments adalah instrumented list -> VALID
-            if len(patient.assesments) == 1:   # hanya assesment ini
-                delete_patient = True
-
-        # Hapus assesment dulu
+        # Hapus assesment
         db.session.delete(assesment)
 
-        # Jika perlu hapus patient juga
-        if delete_patient:
+        # Jika patient ada → hapus juga
+        if patient is not None:
             db.session.delete(patient)
 
         db.session.commit()
 
         return jsonify({
             "status": 200,
-            "message": "Assesment deleted successfully",
-            "patient_deleted": delete_patient
+            "message": "Assesment & related patient deleted",
+            "patient_deleted": patient is not None
         }), 200
 
     except Exception as e:
         db.session.rollback()
-        return jsonify({"status": 500, "message": f"Delete failed: {str(e)}"}), 500
+        return jsonify({
+            "status": 500,
+            "message": f"Delete failed: {str(e)}"
+        }), 500
+
 
 
 
