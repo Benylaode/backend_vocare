@@ -11,6 +11,7 @@ import pickle
 
 load_dotenv()
 api_key = os.getenv("OPENROUTER_API_KEY_KU")
+api_model = os.getenv("API_MODEL")
 
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -178,7 +179,7 @@ def create_assesment():
         """
 
         completion = client.chat.completions.create(
-            model="deepseek/deepseek-chat-v3.1:free",
+            model=api_model,
             messages=[
                 {"role": "system", "content": "Anda adalah asisten medis yang menyusun data asesmen berdasarkan referensi historis."},
                 {"role": "user", "content": prompt},
@@ -303,7 +304,7 @@ def get_assesmen_questions():
         """
 
         completion = client.chat.completions.create(
-            model="deepseek/deepseek-chat-v3.1:free",
+            model=api_model,
             messages=[
                 {"role": "system", "content": "Anda adalah asisten medis yang membuat daftar pertanyaan asesmen."},
                 {"role": "user", "content": prompt}

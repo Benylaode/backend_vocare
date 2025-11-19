@@ -13,6 +13,7 @@ import pickle
 # --- Load API Key ---
 load_dotenv()
 api_key = os.getenv("OPENROUTER_API_KEY_KU")
+api_model = os.getenv("API_MODEL")
 
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -134,7 +135,7 @@ def create_cppt():
 
     try:
         completion = client.chat.completions.create(
-            model="deepseek/deepseek-chat-v3.1:free",
+            model=api_model,
             messages=[
                 {
                     "role": "system",
