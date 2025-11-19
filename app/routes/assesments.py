@@ -371,6 +371,7 @@ def update_assesment(assesment_id):
 
 
 # === DELETE ===
+@assesment_bp.route("/<int:assesment_id>", methods=["DELETE"])
 def delete_assesment(assesment_id):
     assesment = Assesment.query.get(assesment_id)
     if not assesment:
