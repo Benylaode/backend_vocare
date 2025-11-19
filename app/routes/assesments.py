@@ -379,40 +379,47 @@ def delete_assesment(assesment_id):
 
     try:
         # Ambil patient jika ada
-        patient = getattr(assesment, "patient", None)
+        patient = assesment.patient
 
-        delete_patient = False
-        if patient:
-            # Jika patient punya assesment hanya 1 (yang ini)
-            if len(patient.assesments) == 1:
-                delete_patient = True
+        # Tentukan apakah patient harus dihapus
+        delete_patient = (
+            patient is not None and 
+            len(patient.assesments) == 1
+        )
 
         # Hapus assesment
         db.session.delete(assesment)
 
-        # Hapus patient hanya jika memang ada dan boleh dihapus
+        # Hapus patient jika perlu
         if delete_patient:
             db.session.delete(patient)
 
+        # Commit DB
         db.session.commit()
 
-        # Hapus dari FAISS index
-        index = initialize_faiss_index()
-        try:
-            index.remove_ids(np.array([assesment.id], dtype=np.int64))
-            save_faiss_index()
-        except Exception:
-            pass
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"status": 500, "message": f"Delete failed: {str(e)}"}), 500
 
-        # Hapus dari mapping
+    # --------- NON-CRITICAL OPS (tidak mengganggu proses utama) ------------
+    # Hapus dari FAISS index
+    try:
+        index = initialize_faiss_index()
+        index.remove_ids(np.array([assesment_id], dtype=np.int64))
+        save_faiss_index()
+    except Exception:
+        pass
+
+    # Hapus mapping
+    try:
         mapping = load_mapping()
-        if assesment.id in mapping:
-            del mapping[assesment.id]
+        if assesment_id in mapping:
+            del mapping[assesment_id]
             with open(PICKLE_FILE, "wb") as f:
                 pickle.dump(mapping, f)
-
-    except Exception as e:
-        return jsonify({"status": 500, "message": f"Delete failed: {str(e)}"}), 500
+    except Exception:
+        pass
+    # -----------------------------------------------------------------------
 
     return jsonify({
         "status": 200,
