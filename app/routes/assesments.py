@@ -372,23 +372,35 @@ def update_assesment(assesment_id):
 
 # === DELETE ===
 @assesment_bp.route("/<int:assesment_id>", methods=["DELETE"])
-def delete_assesment(id):
+def delete_assesment(assesment_id):
+    assesment = Assesment.query.get(assesment_id)
+    if not assesment:
+        return jsonify({"status": 404, "message": "Assesment not found"}), 404
+
     try:
-        assesment = Assesment.query.get(id)
-
-        # kalau assessment tidak ditemukan -> tetap dianggap sukses
-        if assesment is None:
-            return {"message": "Assessment not found but treated as deleted", "status": 200}
-
-        # hapus assessment
+        # Hapus dari DB
         db.session.delete(assesment)
         db.session.commit()
 
-        return {"message": "Assessment deleted successfully", "status": 200}
+        # Hapus dari FAISS index
+        index = initialize_faiss_index()
+        try:
+            index.remove_ids(np.array([assesment.id], dtype=np.int64))
+            save_faiss_index()
+        except Exception:
+            pass
+
+        # Hapus dari mapping
+        mapping = load_mapping()
+        if assesment.id in mapping:
+            del mapping[assesment.id]
+            with open(PICKLE_FILE, "wb") as f:
+                pickle.dump(mapping, f)
 
     except Exception as e:
-        db.session.rollback()
-        return {"message": f"Delete failed: {str(e)}", "status": 500}
+        return jsonify({"status": 500, "message": f"Delete failed: {str(e)}"}), 500
+
+    return jsonify({"status": 200, "message": "Assesment deleted successfully"}), 200
 
 
 
