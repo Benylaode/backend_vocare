@@ -378,51 +378,34 @@ def delete_assesment(assesment_id):
         return jsonify({"status": 404, "message": "Assesment not found"}), 404
 
     try:
-        # assesment.patient adalah LIST karena relasi kamu rusak
-        patient_list = assesment.patient or []
+        # Ambil patient jika assesment punya relasi
+        patient = assesment.patient  # bisa None
 
-        delete_patients = []
+        delete_patient = False
+        if patient is not None:
+            # patient.assesments adalah instrumented list -> VALID
+            if len(patient.assesments) == 1:   # hanya assesment ini
+                delete_patient = True
 
-        # Loop semua patient yang terhubung
-        for p in patient_list:
-            # Jika patient hanya punya assesment ini
-            if len(p.assesments) == 1:
-                delete_patients.append(p)
-
-        # Hapus assesment
+        # Hapus assesment dulu
         db.session.delete(assesment)
 
-        # Hapus setiap patient yang boleh dihapus
-        for p in delete_patients:
-            db.session.delete(p)
+        # Jika perlu hapus patient juga
+        if delete_patient:
+            db.session.delete(patient)
 
         db.session.commit()
+
+        return jsonify({
+            "status": 200,
+            "message": "Assesment deleted successfully",
+            "patient_deleted": delete_patient
+        }), 200
 
     except Exception as e:
         db.session.rollback()
         return jsonify({"status": 500, "message": f"Delete failed: {str(e)}"}), 500
 
-    # NON CRITICAL OPS (FAISS dan mapping)
-    try:
-        index = initialize_faiss_index()
-        index.remove_ids(np.array([assesment_id], dtype=np.int64))
-        save_faiss_index()
-    except Exception:
-        pass
 
-    try:
-        mapping = load_mapping()
-        if assesment_id in mapping:
-            del mapping[assesment_id]
-            with open(PICKLE_FILE, "wb") as f:
-                pickle.dump(mapping, f)
-    except Exception:
-        pass
-
-    return jsonify({
-        "status": 200,
-        "message": "Assesment deleted successfully",
-        "deleted_patients": [p.id for p in delete_patients]
-    }), 200
 
 
