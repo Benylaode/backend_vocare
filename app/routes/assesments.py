@@ -333,8 +333,8 @@ def get_assesmen_questions():
         {context_text}
 
         Buat JSON pertanyaan yang akan diajukan:
-        1. "pasien" → pertanyaan untuk pasien
-        2. "perawat" → pertanyaan yang diisi oleh perawat
+        1. "pasien" → pertanyaan untuk pasien yang di dasarakan pada data assesmen yang tersedia
+        2. "perawat" → pertanyaan yang diisi oleh perawat berdasarkan data assesmen yang tersedia yang menjadi objectif observasi perawat terhadap pasien
 
         Pastikan:
         - Semua value berupa string pertanyaan
