@@ -338,7 +338,7 @@ def get_assesmen_questions():
 
         Pastikan:
         - Semua value berupa string pertanyaan
-        - Struktur pertanyaan menyesuaikan yang hanya ada pada kategori assesmen secara lengkap sesuai konteks di atas tanpa ada yang tertinggal.
+        - Struktur pertanyaan menyesuaikan yang hanya ada pada kategori assesmen secara lengkap sesuai konteks di atas tanpa ada yang tertinggal dan pastikan struktur json yang dihasilkan itu sama seperti contoh.
         - JSON valid sebagai string
 
         Contoh output (jangan terlalu mengcopy contoh ini, buat pertanyaan baru):
