@@ -11,17 +11,37 @@ user_bp = Blueprint('user_bp', __name__, url_prefix='/users')
 @jwt_required()
 @role_required("admin")
 def get_users():
+    def serialize_relationship(obj_list):
+        # convert list of objects to list of dicts (fallback to string)
+        result = []
+        for obj in obj_list:
+            if hasattr(obj, '__dict__'):
+                # take only column attributes (avoid SQLAlchemy internal attrs)
+                result.append({
+                    k: v.isoformat() if hasattr(v, 'isoformat') else v
+                    for k, v in obj.__dict__.items()
+                    if not k.startswith('_')
+                })
+            else:
+                result.append(str(obj))
+        return result
+
     users = User.query.all()
-    return jsonify([{
-        'id': u.id,
-        'username': u.username,
-        'email': u.email,
-        'role': u.role.name,
-        'intervensi': u.intervensi,
-        'CPPT': u.CPPT,
-        'laporan': u.laporan,
-        'patients': u.patients
-    } for u in users]), 200
+    data = []
+    for u in users:
+        data.append({
+            'id': u.id,
+            'username': u.username,
+            'email': u.email,
+            'role': u.role.name if u.role else None,
+            'intervensi': serialize_relationship(u.intervensi),
+            'CPPT': serialize_relationship(u.CPPT),
+            'laporan': serialize_relationship(u.laporan),
+            'patients': serialize_relationship(u.patients)
+        })
+
+    return jsonify(data), 200
+
 
 @user_bp.route('/<int:user_id>', methods=['GET'])
 @jwt_required()
