@@ -16,7 +16,10 @@ def get_users():
         'id': u.id,
         'username': u.username,
         'email': u.email,
-        'role': u.role.name
+        'role': u.role.name,
+        'intervensi': u.intervensi,
+        'CPPT': u.CPPT,
+        'laporan': u.laporan
     } for u in users]), 200
 
 @user_bp.route('/<int:user_id>', methods=['GET'])

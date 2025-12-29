@@ -179,7 +179,6 @@ def create_cppt():
     except Exception as e:
         return jsonify({"status": 500, "message": f"AI processing failed: {str(e)}", "data": None}), 500
 
-    # --- Parsing hasil AI ---
     try:
         import re
         ai_json = re.sub(r"^```(?:json)?|```$", "", ai_json.strip(), flags=re.MULTILINE)
