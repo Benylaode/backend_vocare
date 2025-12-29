@@ -47,13 +47,34 @@ def get_users():
 @jwt_required()
 @role_required("admin", "user")
 def get_user(user_id):
+    def serialize_relationship(obj_list):
+        result = []
+        for obj in obj_list:
+            if hasattr(obj, '__dict__'):
+                result.append({
+                    k: (v.isoformat() if hasattr(v, 'isoformat') else v)
+                    for k, v in obj.__dict__.items()
+                    if not k.startswith('_')
+                })
+            else:
+                result.append(str(obj))
+        return result
+
     user = User.query.get_or_404(user_id)
-    return jsonify({
+
+    data = {
         'id': user.id,
         'username': user.username,
         'email': user.email,
-        'role': user.role.name
-    }), 200
+        'role': user.role.name if user.role else None,
+        'intervensi': serialize_relationship(user.intervensi),
+        'CPPT': serialize_relationship(user.CPPT),
+        'laporan': serialize_relationship(user.laporan),
+        'patients': serialize_relationship(user.patients)
+    }
+
+    return jsonify(data), 200
+
 
 @user_bp.route('/', methods=['POST'])
 
