@@ -19,7 +19,8 @@ def get_users():
         'role': u.role.name,
         'intervensi': u.intervensi,
         'CPPT': u.CPPT,
-        'laporan': u.laporan
+        'laporan': u.laporan,
+        'patients': u.patients
     } for u in users]), 200
 
 @user_bp.route('/<int:user_id>', methods=['GET'])
