@@ -1,181 +1,114 @@
 from flask import Blueprint, request, jsonify
-from app.model import db, Patient, Assesment
+from app.model import db, Patient, User
+from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime
-from flask_jwt_extended import jwt_required
-from app.utils import role_required
 
 patient_bp = Blueprint("patient_bp", __name__, url_prefix="/patients")
+MAX_PATIENTS_PER_ROOM = 10 
 
+# --- READ (Get All) ---
 @patient_bp.route("/", methods=["GET"])
+@jwt_required()
 def get_patients():
-    patients = Patient.query.all()
-    data = [
-        {
-            "id": p.id,
-            "no_rekam_medis": p.no_rekam_medis,
-            "id_assesment": p.assesment_id,
-            "nama": p.nama,
-            "tgl_lahir": p.tgl_lahir.isoformat() if p.tgl_lahir else None,
-            "jenis_kelamin": p.jenis_kelamin,
-            "alamat": p.alamat,
-            "agama": p.agama,
-            "pekerjaan": p.pekerjaan,
-            "status_perkawinan": p.status_perkawinan,
-            "penanggung_jawab": p.penanggung_jawab,
-            "hubungan_penanggung_jawab": p.hubungan_penanggung_jawab,
-            "kontak_penanggung_jawab": p.kontak_penanggung_jawab,
-            "status_rawat": p.status_rawat,
-        }
-        for p in patients
-    ]
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    
+    query = Patient.query
+    if user.role.name != 'admin' and user.ruangan:
+        query = query.filter_by(ruangan=user.ruangan)
+    
+    patients = query.order_by(Patient.id.desc()).all()
+    data = [{
+        "id": p.id, "no_rekam_medis": p.no_rekam_medis, "nama": p.nama,
+        "ruangan": p.ruangan, "tgl_lahir": p.tgl_lahir.isoformat() if p.tgl_lahir else None,
+        "umur": p.umur(), "jenis_kelamin": p.jenis_kelamin
+    } for p in patients]
+    
     return jsonify({"status": 200, "message": "Success", "data": data}), 200
 
+# --- READ (Get One) ---
 @patient_bp.route("/<int:patient_id>", methods=["GET"])
-def get_patient(patient_id):
-    p = Patient.query.get(patient_id)
-    if not p:
-        return jsonify({"status": 404, "message": "Patient not found", "data": None}), 404
+@jwt_required()
+def get_patient_by_id(patient_id):
+    patient = Patient.query.get(patient_id)
+    if not patient:
+        return jsonify({"status": 404, "message": "Pasien tidak ditemukan"}), 404
+    
+    return jsonify({
+        "status": 200, "message": "Success",
+        "data": {
+            "id": patient.id, "no_rekam_medis": patient.no_rekam_medis,
+            "nama": patient.nama, "ruangan": patient.ruangan,
+            "tgl_lahir": patient.tgl_lahir.isoformat() if patient.tgl_lahir else None,
+            "jenis_kelamin": patient.jenis_kelamin, "alamat": patient.alamat,
+            "penanggung_jawab": patient.penanggung_jawab
+        }
+    }), 200
 
-    data = {
-        "id": p.id,
-        "no_rekam_medis": p.no_rekam_medis,
-        "id_assesment": p.assesment_id,
-        "nama": p.nama,
-        "tgl_lahir": p.tgl_lahir.isoformat() if p.tgl_lahir else None,
-        "jenis_kelamin": p.jenis_kelamin,
-        "alamat": p.alamat,
-        "agama": p.agama,
-        "pekerjaan": p.pekerjaan,
-        "status_perkawinan": p.status_perkawinan,
-        "penanggung_jawab": p.penanggung_jawab,
-        "hubungan_penanggung_jawab": p.hubungan_penanggung_jawab,
-        "kontak_penanggung_jawab": p.kontak_penanggung_jawab,
-        "status_rawat": p.status_rawat,
-    }
-    return jsonify({"status": 200, "message": "Success", "data": data}), 200
-
-
+# --- CREATE ---
 @patient_bp.route("/", methods=["POST"])
 @jwt_required()
-@role_required("admin", "user")
 def create_patient():
-    payload = request.get_json()
+    data = request.get_json()
+    if not all(k in data for k in ["nama", "no_rekam_medis", "ruangan"]):
+        return jsonify({"status": 400, "message": "Data wajib: nama, no_rekam_medis, ruangan"}), 400
 
-    if not payload or not payload.get("id_assesment") or not payload.get("nama"):
-        return jsonify({"status": 400, "message": "Fields required: id_assesment, nama"}), 400
+    # Cek Kapasitas Ruangan
+    count = Patient.query.filter_by(ruangan=data["ruangan"], status_rawat="rawat_inap").count()
+    if count >= MAX_PATIENTS_PER_ROOM:
+        return jsonify({"status": 400, "message": f"Ruangan {data['ruangan']} penuh (Max {MAX_PATIENTS_PER_ROOM})"}), 400
 
-    id_assesment = payload["id_assesment"]
-    nama = payload["nama"]
-
-    assesment = Assesment.query.filter_by(id=id_assesment).first()
-    if not assesment:
-        return jsonify({"status": 404, "message": "Assesment not found"}), 404
-
+    if Patient.query.filter_by(no_rekam_medis=data["no_rekam_medis"]).first():
+        return jsonify({"status": 409, "message": "No Rekam Medis sudah ada"}), 409
+        
     try:
-        data = assesment.data
-        if isinstance(data, str):
-            import json, re
-            data = re.sub(r"```(?:json)?|```", "", data).strip()
-            data = json.loads(data)
-    except Exception:
-        return jsonify({"status": 500, "message": "Invalid JSON in assesment"}), 500
+        tgl = datetime.strptime(data.get("tgl_lahir"), "%Y-%m-%d").date() if data.get("tgl_lahir") else None
+    except: return jsonify({"status": 400, "message": "Format tanggal salah"}), 400
 
-    info_umum = data.get("asesmen_awal_keperawatan", {}).get("informasi_umum", {})
-
-    nama_pasien = info_umum.get("nama") or info_umum.get("nama_pasien") or nama
-    no_rekam_medis = info_umum.get("no_rm") or info_umum.get("kode_rm") or info_umum.get("nomor_rekam_medis") or None
-
-    if Patient.query.filter((Patient.assesment_id == id_assesment) | 
-                            (Patient.no_rekam_medis == no_rekam_medis)).first():
-        return jsonify({"status": 400, "message": "Patient with this assesment_id or no_rekam_medis already exists"}), 400
-
-    tgl_lahir = info_umum.get("tanggal_lahir")
-    if tgl_lahir and isinstance(tgl_lahir, str):
-        try:
-            from datetime import datetime
-            tgl_lahir = datetime.strptime(tgl_lahir, "%d %B %Y").date()
-        except Exception:
-            tgl_lahir = None
-
-    pj = info_umum.get("penanggung_jawab")
-    if isinstance(pj, dict):
-        nama_pj = pj.get("nama")
-        hubungan_pj = pj.get("hubungan")
-        kontak_pj = pj.get("kontak")
-    else:
-        nama_pj = pj
-        hubungan_pj = info_umum.get("hubungan_penanggung_jawab")
-        kontak_pj = info_umum.get("kontak_penanggung_jawab")
-
-    new_patient = Patient(
-        assesment_id=id_assesment,
-        nama=nama_pasien,
-        no_rekam_medis=no_rekam_medis,
-        tgl_lahir=tgl_lahir,
-        jenis_kelamin=info_umum.get("jenis_kelamin"),
-        alamat=info_umum.get("alamat"),
-        agama=info_umum.get("agama"),
-        pekerjaan=info_umum.get("pekerjaan"),
-        status_perkawinan=info_umum.get("status_perkawinan"),
-        penanggung_jawab=nama_pj,
-        hubungan_penanggung_jawab=hubungan_pj,
-        kontak_penanggung_jawab=kontak_pj,
-        status_rawat="rawat_inap"
+    p = Patient(
+        nama=data["nama"], no_rekam_medis=data["no_rekam_medis"], ruangan=data["ruangan"],
+        tgl_lahir=tgl, jenis_kelamin=data.get("jenis_kelamin"), alamat=data.get("alamat"),
+        status_rawat="rawat_inap", penanggung_jawab=data.get("penanggung_jawab")
     )
+    db.session.add(p)
+    db.session.commit()
+    
+    return jsonify({"status": 201, "message": "Pasien terdaftar", "data": {"id": p.id}}), 201
 
-    try:
-        db.session.add(new_patient)
-        db.session.commit()
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({
-            "status": 400,
-            "message": "Failed to create patient",
-            "error": str(e)
-        }), 400
-
-    return jsonify({
-        "status": 201,
-        "message": "Patient created from assesment",
-        "data": {"id": new_patient.id}
-    }), 201
-
-
+# --- UPDATE ---
 @patient_bp.route("/<int:patient_id>", methods=["PUT"])
 @jwt_required()
-@role_required("admin", "user")
 def update_patient(patient_id):
-    p = Patient.query.get(patient_id)
-    if not p:
-        return jsonify({"status": 404, "message": "Patient not found", "data": None}), 404
+    patient = Patient.query.get(patient_id)
+    if not patient: return jsonify({"status": 404, "message": "Pasien tidak ditemukan"}), 404
+    
+    data = request.get_json()
+    
+    # Validasi Pindah Ruangan
+    if "ruangan" in data and data["ruangan"] != patient.ruangan:
+        count = Patient.query.filter_by(ruangan=data["ruangan"], status_rawat="rawat_inap").count()
+        if count >= MAX_PATIENTS_PER_ROOM:
+            return jsonify({"status": 400, "message": f"Ruangan tujuan penuh"}), 400
+        patient.ruangan = data["ruangan"]
 
-    payload = request.get_json()
-    if not payload:
-        return jsonify({"status": 400, "message": "No data provided", "data": None}), 400
-
-    for field in [
-        "no_rekam_medis", "nama", "tgl_lahir", "jenis_kelamin", "alamat", "agama", "pekerjaan",
-        "status_perkawinan", "penanggung_jawab", "hubungan_penanggung_jawab", "kontak_penanggung_jawab",
-        "status_rawat"
-    ]:
-        if field in payload:
-            if field == "tgl_lahir" and isinstance(payload[field], str):
-                setattr(p, field, datetime.fromisoformat(payload[field]).date())
-            else:
-                setattr(p, field, payload[field])
+    if "nama" in data: patient.nama = data["nama"]
+    if "alamat" in data: patient.alamat = data["alamat"]
+    if "status_rawat" in data: patient.status_rawat = data["status_rawat"]
+    if "penanggung_jawab" in data: patient.penanggung_jawab = data["penanggung_jawab"]
+    
+    if "tgl_lahir" in data:
+        try: patient.tgl_lahir = datetime.strptime(data["tgl_lahir"], "%Y-%m-%d").date()
+        except: return jsonify({"status": 400, "message": "Format tanggal salah"}), 400
 
     db.session.commit()
-    return jsonify({"status": 200, "message": "Patient updated", "data": {"id": p.id}}), 200
-
+    return jsonify({"status": 200, "message": "Pasien diperbarui"}), 200
 
 @patient_bp.route("/<int:patient_id>", methods=["DELETE"])
 @jwt_required()
-@role_required("admin", "user")
 def delete_patient(patient_id):
-    p = Patient.query.get(patient_id)
-    if not p:
-        return jsonify({"status": 404, "message": "Patient not found", "data": None}), 404
-
-    db.session.delete(p)
+    patient = Patient.query.get(patient_id)
+    if not patient: return jsonify({"status": 404, "message": "Pasien tidak ditemukan"}), 404
+    
+    db.session.delete(patient)
     db.session.commit()
-    return jsonify({"status": 200, "message": "Patient deleted", "data": {"id": p.id}}), 200
+    return jsonify({"status": 200, "message": "Pasien dihapus"}), 200

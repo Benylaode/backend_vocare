@@ -1,32 +1,22 @@
 from flask import Blueprint, request, jsonify
-from werkzeug.security import generate_password_hash, check_password_hash
-from app.model import db, User, RoleEnum  
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
-from app.model import User
-from app.utils import role_required
+from app.model import db, User, RoleEnum
+from flask_jwt_extended import jwt_required, get_jwt
 
 user_bp = Blueprint('user_bp', __name__, url_prefix='/users')
 
+def admin_required():
+    claims = get_jwt()
+    if claims.get("role") != "admin":
+        return False
+    return True
+
 @user_bp.route('/', methods=['GET'])
 @jwt_required()
-@role_required("admin")
 def get_users():
-    def serialize_relationship(obj_list):
-        # convert list of objects to list of dicts (fallback to string)
-        result = []
-        for obj in obj_list:
-            if hasattr(obj, '__dict__'):
-                # take only column attributes (avoid SQLAlchemy internal attrs)
-                result.append({
-                    k: v.isoformat() if hasattr(v, 'isoformat') else v
-                    for k, v in obj.__dict__.items()
-                    if not k.startswith('_')
-                })
-            else:
-                result.append(str(obj))
-        return result
+    if not admin_required():
+        return jsonify({"status": 403, "message": "Akses ditolak. Hanya Admin."}), 403
 
-    users = User.query.all()
+    users = User.query.order_by(User.id.asc()).all()
     data = []
     for u in users:
         data.append({
@@ -34,115 +24,132 @@ def get_users():
             'username': u.username,
             'email': u.email,
             'role': u.role.name if u.role else None,
-            'intervensi': serialize_relationship(u.intervensi),
-            'CPPT': serialize_relationship(u.CPPT),
-            'laporan': serialize_relationship(u.laporan),
-            'patients': serialize_relationship(u.patients)
+            'ruangan': u.ruangan,  
+            'created_at': "Tersedia" if u.id else None
         })
 
-    return jsonify(data), 200
+    return jsonify({"status": 200, "message": "Success", "data": data}), 200
 
 
 @user_bp.route('/<int:user_id>', methods=['GET'])
 @jwt_required()
-@role_required("admin", "user")
 def get_user(user_id):
-    def serialize_relationship(obj_list):
-        result = []
-        for obj in obj_list:
-            if hasattr(obj, '__dict__'):
-                result.append({
-                    k: (v.isoformat() if hasattr(v, 'isoformat') else v)
-                    for k, v in obj.__dict__.items()
-                    if not k.startswith('_')
-                })
-            else:
-                result.append(str(obj))
-        return result
+    if not admin_required():
+        return jsonify({"status": 403, "message": "Akses ditolak."}), 403
 
-    user = User.query.get_or_404(user_id)
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"status": 404, "message": "User tidak ditemukan"}), 404
 
     data = {
         'id': user.id,
         'username': user.username,
         'email': user.email,
         'role': user.role.name if user.role else None,
-        'intervensi': serialize_relationship(user.intervensi),
-        'CPPT': serialize_relationship(user.CPPT),
-        'laporan': serialize_relationship(user.laporan),
-        'patients': serialize_relationship(user.patients)
+        'ruangan': user.ruangan
     }
-
-    return jsonify(data), 200
+    return jsonify({"status": 200, "message": "Success", "data": data}), 200
 
 
 @user_bp.route('/', methods=['POST'])
-
+@jwt_required()
 def create_user():
+    if not admin_required():
+        return jsonify({"status": 403, "message": "Akses ditolak."}), 403
+
     data = request.get_json()
-    if not data or not data.get('username') or not data.get('email') or not data.get('password'):
-        return jsonify({'error': 'Missing required fields'}), 400
+    if not data or not all(k in data for k in ['username', 'email', 'password']):
+        return jsonify({'status': 400, 'message': 'Username, Email, Password wajib diisi'}), 400
 
     if User.query.filter_by(username=data['username']).first():
-        return jsonify({'error': 'Username already exists'}), 409
+        return jsonify({'status': 409, 'message': 'Username sudah digunakan'}), 409
 
     if User.query.filter_by(email=data['email']).first():
-        return jsonify({'error': 'Email already exists'}), 409
+        return jsonify({'status': 409, 'message': 'Email sudah digunakan'}), 409
 
+    role_str = data.get('role', 'user')
     try:
-        role = RoleEnum[data.get('role', RoleEnum.user.name)]
+        role_enum = RoleEnum[role_str]
     except KeyError:
-        return jsonify({'error': 'Invalid role provided'}), 400
+        return jsonify({'status': 400, 'message': 'Role tidak valid (opsi: admin, user, ketim)'}), 400
     
+    ruangan = data.get('ruangan', None)
+
     new_user = User(
         username=data['username'],
         email=data['email'],
-        role=role
+        role=role_enum,
+        ruangan=ruangan
     )
     new_user.set_password(data['password'])
     
     db.session.add(new_user)
     db.session.commit()
-    return jsonify({'message': 'User created', 'id': new_user.id}), 201
 
+    return jsonify({
+        'status': 201, 
+        'message': 'User berhasil dibuat', 
+        'data': {'id': new_user.id, 'username': new_user.username, 'ruangan': new_user.ruangan}
+    }), 201
+
+
+# --- UPDATE (Edit User/Pindah Ruangan) ---
 @user_bp.route('/<int:user_id>', methods=['PUT'])
 @jwt_required()
-@role_required("user", "admin")
 def update_user(user_id):
-    user = User.query.get_or_404(user_id)
-    data = request.get_json()
-    
-    if not data:
-        return jsonify({'error': 'No data provided for update'}), 400
+    if not admin_required():
+        return jsonify({"status": 403, "message": "Akses ditolak."}), 403
 
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"status": 404, "message": "User tidak ditemukan"}), 404
+
+    data = request.get_json()
+    if not data:
+        return jsonify({'status': 400, 'message': 'Tidak ada data update'}), 400
+
+    # Update Username
     if 'username' in data and data['username'] != user.username:
         if User.query.filter_by(username=data['username']).first():
-            return jsonify({'error': 'Username already exists'}), 409
+            return jsonify({'status': 409, 'message': 'Username sudah digunakan'}), 409
         user.username = data['username']
 
+    # Update Email
     if 'email' in data and data['email'] != user.email:
         if User.query.filter_by(email=data['email']).first():
-            return jsonify({'error': 'Email already exists'}), 409
+            return jsonify({'status': 409, 'message': 'Email sudah digunakan'}), 409
         user.email = data['email']
         
-    if 'password' in data:
+    # Update Password
+    if 'password' in data and data['password']:
         user.set_password(data['password'])
     
+    # Update Role
     if 'role' in data:
         try:
             user.role = RoleEnum[data['role']]
         except KeyError:
-            return jsonify({'error': 'Invalid role provided'}), 400
+            return jsonify({'status': 400, 'message': 'Role tidak valid'}), 400
+
+    # REVISI: Update Ruangan (Fitur Pindah Tugas)
+    if 'ruangan' in data:
+        user.ruangan = data['ruangan']
 
     db.session.commit()
-    return jsonify({'message': 'User updated'}), 200
+    return jsonify({'status': 200, 'message': 'User berhasil diperbarui', 'data': {'id': user.id, 'ruangan': user.ruangan}}), 200
 
+
+# --- DELETE (Remove User) ---
 @user_bp.route('/<int:user_id>', methods=['DELETE'])
 @jwt_required()
-@role_required("admin")
 def delete_user(user_id):
-    user = User.query.get_or_404(user_id)
+    if not admin_required():
+        return jsonify({"status": 403, "message": "Akses ditolak."}), 403
+
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"status": 404, "message": "User tidak ditemukan"}), 404
+
     db.session.delete(user)
     db.session.commit()
-    return jsonify({'message': 'User deleted'}), 200
-
+    return jsonify({'status': 200, 'message': 'User berhasil dihapus'}), 200

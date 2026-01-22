@@ -9,17 +9,20 @@ db = SQLAlchemy()
 jwt = JWTManager()
 migrate = Migrate()
 
-def create_app():
+# Tambahkan parameter test_config=None
+def create_app(test_config=None):
     app = Flask(__name__)
-    app.config.from_object(Config)
+
+    if test_config is None:
+        app.config.from_object(Config)
+    else:
+        app.config.from_mapping(test_config)
+
     swagger = Swagger(app, template_file='swagger.yaml')
-
-
     db.init_app(app)
     jwt.init_app(app)
     migrate.init_app(app, db)
     
-
     from .routes.main import main_bp
     from .routes.user import user_bp
     from .routes.auth import auth_bp
@@ -29,6 +32,7 @@ def create_app():
     from .routes.cppt import cppt_bp as cppt
     from .routes.patient import patient_bp as patient
     from .routes.intervensi import intervensi_bp as intervensi
+    
     app.register_blueprint(intervensi, url_prefix='/intervensi')
     app.register_blueprint(patient, url_prefix='/patients')
     app.register_blueprint(cppt, url_prefix='/cppt')

@@ -1,9 +1,7 @@
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
-from app.model import db, User
-from flask_jwt_extended import get_jwt_identity, get_jwt
+from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, get_jwt
+from app.model import db, User, RoleEnum
 from datetime import timedelta
-from app.model import RoleEnum
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -19,21 +17,24 @@ def register():
     if User.query.filter_by(email=data["email"]).first():
         return jsonify({"error": "Email already exists"}), 400
 
-
     role = RoleEnum.user   
+    # REVISI: Ambil ruangan dari request untuk user ini
+    ruangan = data.get("ruangan", None)
 
     new_user = User(
         username=data["username"],
         email=data["email"],
-        role=role
+        role=role,
+        ruangan=ruangan 
     )
     new_user.set_password(data["password"])
     db.session.add(new_user)
     db.session.commit()
 
+    # Sertakan info ruangan di token (opsional, tapi berguna)
     access_token = create_access_token(
         identity=str(new_user.id),
-        additional_claims={"role": new_user.role.name}
+        additional_claims={"role": new_user.role.name, "ruangan": new_user.ruangan}
     )
 
     return jsonify({
@@ -54,24 +55,25 @@ def login():
 
     access_token = create_access_token(
         identity=str(user.id),
-        additional_claims={"role": user.role.name},
-        expires_delta=timedelta(hours=1)
+        additional_claims={"role": user.role.name, "ruangan": user.ruangan},
+        expires_delta=timedelta(hours=8) # Masa aktif token disesuaikan shift kerja
     )
 
     return jsonify({
         "access_token": access_token,
-            "username": user.username,
-            "email": user.email,
-            "role": user.role.name,
-            "id": user.id
+        "username": user.username,
+        "email": user.email,
+        "role": user.role.name,
+        "id": user.id,
+        "ruangan": user.ruangan # Frontend perlu ini untuk validasi
     }), 200
 
 
 @auth_bp.route("/profile", methods=["GET"])
 @jwt_required()
 def profile():
-    user_id = int(get_jwt_identity())   # ✅ ambil id (string → int)
-    claims = get_jwt()                  # ✅ ambil role dari claims
+    user_id = int(get_jwt_identity())   
+    claims = get_jwt()                  
     role = claims["role"]
 
     user = User.query.get(user_id)
@@ -82,5 +84,6 @@ def profile():
         "id": user.id,
         "username": user.username,
         "email": user.email,
-        "role": role
+        "role": role,
+        "ruangan": user.ruangan # Tampilkan ruangan di profile
     }), 200
