@@ -1,8 +1,8 @@
 swagger: "2.0"
 info:
   title: Medical Records API
-  description: API untuk mengelola data rekam medis pasien (Askeb, CPPT, Intervensi), pengguna, dan dokumen medis.
-  version: 1.1.0
+  description: API lengkap untuk Vocare (Manajemen Rekam Medis AI-Assisted).
+  version: 1.2.0
 host: localhost:5000
 basePath: /
 schemes:
@@ -18,31 +18,31 @@ securityDefinitions:
     type: apiKey
     name: Authorization
     in: header
-    description: "Masukkan token JWT dengan format: 'Bearer {token}'"
+    description: "Format: 'Bearer {token}'"
 
 security:
   - bearerAuth: []
 
 tags:
   - name: Auth
-    description: Endpoint untuk autentikasi dan manajemen profil
+    description: Autentikasi User
   - name: Users
-    description: Operasi CRUD untuk pengguna (memerlukan hak akses admin)
+    description: Manajemen Pengguna (Admin Only)
   - name: Patients
-    description: Pengelolaan data pasien
+    description: Data Pasien
   - name: Assesments
-    description: Pengelolaan data Form Pengkajian Awal (TTV, Fisik, dll)
+    description: Form Pengkajian Awal & TTV
   - name: Laporan
-    description: Pengelolaan Analisis Asuhan Keperawatan (SDKI, SIKI, SLKI)
+    description: Analisis Askeb (SDKI, SIKI, SLKI)
   - name: CPPT
-    description: Pengelolaan Catatan Perkembangan Pasien Terintegrasi
+    description: Catatan Perkembangan Pasien Terintegrasi
   - name: Intervensi
-    description: Pengelolaan Implementasi dan Evaluasi Keperawatan
+    description: Implementasi & Evaluasi Tindakan
   - name: PDF Processing
-    description: Endpoint untuk mengunggah dan memproses dokumen PDF
+    description: Upload & Ekstraksi Dokumen (RAG)
 
 definitions:
-  # --- USER DEFINITIONS ---
+  # --- USER & AUTH ---
   User:
     type: object
     properties:
@@ -57,14 +57,10 @@ definitions:
         enum: [admin, user, ketim]
       ruangan:
         type: string
-        description: "Ruangan tempat perawat bertugas"
 
   NewUser:
     type: object
-    required:
-      - username
-      - email
-      - password
+    required: [username, email, password]
     properties:
       username:
         type: string
@@ -79,14 +75,10 @@ definitions:
         default: user
       ruangan:
         type: string
-        example: "Mawar"
-        description: "Wajib diisi jika role adalah user/perawat"
 
   LoginCredentials:
     type: object
-    required:
-      - username
-      - password
+    required: [username, password]
     properties:
       username:
         type: string
@@ -94,7 +86,7 @@ definitions:
         type: string
         format: password
 
-  # --- PATIENT DEFINITIONS ---
+  # --- PATIENT ---
   Patient:
     type: object
     properties:
@@ -113,15 +105,10 @@ definitions:
         type: string
       status_rawat:
         type: string
-        enum: [rawat_inap, rawat_jalan, pulang, meninggal]
 
   PatientInput:
     type: object
-    required:
-      - nama
-      - no_rekam_medis
-      - ruangan
-      - tgl_lahir
+    required: [nama, no_rekam_medis, ruangan, tgl_lahir]
     properties:
       nama:
         type: string
@@ -135,38 +122,33 @@ definitions:
         example: "1990-01-01"
       jenis_kelamin:
         type: string
+        enum: [Laki-laki, Perempuan]
       alamat:
         type: string
       penanggung_jawab:
         type: string
 
-  # --- MEDICAL RECORDS DEFINITIONS ---
+  # --- MEDICAL RECORDS ---
   Assesment:
     type: object
-    description: "Data mentah formulir pengkajian (TTV, Skrining, dll)"
     properties:
       id:
         type: integer
       tanggal:
         type: string
         format: date-time
-      patient_id:
-        type: integer
-      perawat_nama:
+      perawat:
         type: string
       data:
         type: object
-        description: "JSON Object berisi TTV, BB, TB, dll"
+        description: "JSON Data (TTV, Fisik, dll)"
 
   Laporan:
     type: object
-    description: "Analisis Asuhan Keperawatan (Askeb)"
     properties:
       id:
         type: integer
       patient_id:
-        type: integer
-      assesment_id:
         type: integer
       tanggal:
         type: string
@@ -181,16 +163,13 @@ definitions:
         type: string
       SDKI:
         type: array
-        items:
-          type: string
+        items: {type: string}
       SIKI:
         type: array
-        items:
-          type: string
+        items: {type: string}
       SLKI:
         type: array
-        items:
-          type: string
+        items: {type: string}
 
   CPPT:
     type: object
@@ -199,12 +178,11 @@ definitions:
         type: integer
       patient_id:
         type: integer
+      shift:
+        type: string
       tanggal:
         type: string
         format: date-time
-      shift:
-        type: string
-        enum: [Pagi, Sore, Malam]
       subjective:
         type: string
       objective:
@@ -221,63 +199,58 @@ definitions:
         type: integer
       patient_id:
         type: integer
-      tanggal:
-        type: string
-        format: date-time
       implementasi:
         type: string
       evaluasi:
         type: string
+      tanggal:
+        type: string
+        format: date-time
 
-  # --- INPUT PAYLOADS ---
+  # --- INPUTS ---
   AssesmentInput:
     type: object
-    required:
-      - query
-      - patient_id
+    required: [query, patient_id]
     properties:
       query:
         type: string
-        description: "Narasi observasi awal untuk diekstrak menjadi form"
+        description: "Narasi observasi awal (mengandung RM)"
       patient_id:
         type: integer
 
   LaporanInput:
     type: object
-    required:
-      - patient_id
+    required: [patient_id, query]
     properties:
       patient_id:
         type: integer
-      assesment_id:
-        type: integer
-        description: "Opsional: ID dari assessment yang menjadi dasar analisis"
       query:
         type: string
-        description: "Observasi tambahan manual perawat"
+      assesment_id:
+        type: integer
 
   CPPTInput:
     type: object
-    required:
-      - patient_id
+    required: [patient_id]
     properties:
       patient_id:
         type: integer
       query:
         type: string
-        description: "Perkembangan kondisi pasien saat ini"
+        description: "Update kondisi terkini"
 
   IntervensiInput:
     type: object
-    required:
-      - patient_id
-      - query
+    required: [patient_id, implementasi, evaluasi, user_id]
     properties:
       patient_id:
         type: integer
-      query:
+      user_id:
+        type: integer
+      implementasi:
         type: string
-        description: "Tindakan yang dilakukan atau evaluasi"
+      evaluasi:
+        type: string
 
   Query:
     type: object
@@ -286,69 +259,58 @@ definitions:
         type: string
 
 paths:
-  # --- AUTH ---
+  # ================= AUTH =================
   /auth/register:
     post:
-      tags:
-        - Auth
-      summary: Registrasi pengguna baru
+      tags: [Auth]
+      summary: Registrasi User
       security: []
       parameters:
         - in: body
           name: body
-          required: true
           schema:
             $ref: '#/definitions/NewUser'
       responses:
         '201':
-          description: Registrasi berhasil
-        '400':
-          description: Data tidak lengkap
+          description: Created
 
   /auth/login:
     post:
-      tags:
-        - Auth
-      summary: Login pengguna
+      tags: [Auth]
+      summary: Login
       security: []
       parameters:
         - in: body
           name: body
-          required: true
           schema:
             $ref: '#/definitions/LoginCredentials'
       responses:
         '200':
-          description: Login berhasil, mengembalikan token dan ruangan
+          description: Returns Token
 
   /auth/profile:
     get:
-      tags:
-        - Auth
-      summary: Profil pengguna (termasuk ruangan)
+      tags: [Auth]
+      summary: Get Profile
       responses:
         '200':
-          description: Data profil
           schema:
             $ref: '#/definitions/User'
 
-  # --- USERS ---
+  # ================= USERS =================
   /users/:
     get:
-      tags:
-        - Users
-      summary: List semua pengguna (Admin only)
+      tags: [Users]
+      summary: List Users (Admin)
       responses:
         '200':
-          description: Sukses
           schema:
             type: array
             items:
               $ref: '#/definitions/User'
     post:
-      tags:
-        - Users
-      summary: Admin membuat user baru
+      tags: [Users]
+      summary: Create User (Admin)
       parameters:
         - in: body
           name: body
@@ -365,17 +327,15 @@ paths:
         required: true
         type: integer
     get:
-      tags:
-        - Users
-      summary: Detail pengguna
+      tags: [Users]
+      summary: Get User Detail
       responses:
         '200':
           schema:
             $ref: '#/definitions/User'
     put:
-      tags:
-        - Users
-      summary: Update pengguna (termasuk pindah ruangan)
+      tags: [Users]
+      summary: Update User
       parameters:
         - in: body
           name: body
@@ -385,19 +345,17 @@ paths:
         '200':
           description: Updated
     delete:
-      tags:
-        - Users
-      summary: Hapus pengguna
+      tags: [Users]
+      summary: Delete User
       responses:
         '200':
           description: Deleted
 
-  # --- PATIENTS ---
+  # ================= PATIENTS =================
   /patients/:
     get:
-      tags:
-        - Patients
-      summary: Get Patients (Difilter berdasarkan ruangan perawat)
+      tags: [Patients]
+      summary: Get All Patients (Filtered by Room)
       responses:
         '200':
           schema:
@@ -405,9 +363,8 @@ paths:
             items:
               $ref: '#/definitions/Patient'
     post:
-      tags:
-        - Patients
-      summary: Tambah Pasien Baru
+      tags: [Patients]
+      summary: Create Patient
       parameters:
         - in: body
           name: body
@@ -424,17 +381,15 @@ paths:
         required: true
         type: integer
     get:
-      tags:
-        - Patients
-      summary: Detail Pasien
+      tags: [Patients]
+      summary: Get Patient Detail
       responses:
         '200':
           schema:
             $ref: '#/definitions/Patient'
     put:
-      tags:
-        - Patients
-      summary: Update Pasien
+      tags: [Patients]
+      summary: Update Patient
       parameters:
         - in: body
           name: body
@@ -444,19 +399,26 @@ paths:
         '200':
           description: Updated
     delete:
-      tags:
-        - Patients
-      summary: Hapus Pasien
+      tags: [Patients]
+      summary: Delete Patient
       responses:
         '200':
           description: Deleted
 
-  # --- ASSESMENTS (Form Pengkajian) ---
+  # ================= ASSESMENTS =================
   /assesments/:
+    get:
+      tags: [Assesments]
+      summary: List Assesments (Filtered by Room)
+      responses:
+        '200':
+          schema:
+            type: array
+            items:
+              $ref: '#/definitions/Assesment'
     post:
-      tags:
-        - Assesments
-      summary: Buat Assesment Baru (Ekstraksi AI ke Form JSON)
+      tags: [Assesments]
+      summary: Create Assesment (AI Extraction)
       parameters:
         - in: body
           name: body
@@ -466,29 +428,46 @@ paths:
         '201':
           description: Created
 
-  /assesments/{patient_id}:
+  /assesments/{assesment_id}:
     get:
-      tags:
-        - Assesments
-      summary: Ambil history assesment pasien tertentu
+      tags: [Assesments]
+      summary: Get Single Assesment by ID
       parameters:
-        - name: patient_id
+        - name: assesment_id
           in: path
           required: true
           type: integer
       responses:
         '200':
           schema:
-            type: array
-            items:
-              $ref: '#/definitions/Assesment'
+            $ref: '#/definitions/Assesment'
 
-  # --- LAPORAN (ASKEB - SDKI/SIKI) ---
+  /assesments/search:
+    post:
+      tags: [Assesments]
+      summary: Search History Assesment (Semantic)
+      parameters:
+        - in: body
+          name: body
+          schema:
+            $ref: '#/definitions/Query'
+      responses:
+        '200':
+          description: Search results
+
+  /assesments/questions:
+    get:
+      tags: [Assesments]
+      summary: Get AI Generated Questions
+      responses:
+        '200':
+          description: JSON pertanyaan untuk pasien & perawat
+
+  # ================= LAPORAN (ASKEB) =================
   /laporan/:
     get:
-      tags:
-        - Laporan
-      summary: Get All Laporan (Filtered by Ruangan)
+      tags: [Laporan]
+      summary: List All Laporan
       responses:
         '200':
           schema:
@@ -496,9 +475,8 @@ paths:
             items:
               $ref: '#/definitions/Laporan'
     post:
-      tags:
-        - Laporan
-      summary: Buat Askeb Baru (Analisis AI)
+      tags: [Laporan]
+      summary: Create Askeb (AI Analysis)
       parameters:
         - in: body
           name: body
@@ -508,43 +486,55 @@ paths:
         '201':
           description: Created
 
-  /laporan/{patient_id}:
+  /laporan/{laporan_id}:
+    parameters:
+      - name: laporan_id
+        in: path
+        required: true
+        type: integer
     get:
-      tags:
-        - Laporan
-      summary: Get Askeb by Patient ID
-      parameters:
-        - name: patient_id
-          in: path
-          required: true
-          type: integer
+      tags: [Laporan]
+      summary: Get Laporan Detail
       responses:
         '200':
           schema:
-            type: array
-            items:
-              $ref: '#/definitions/Laporan'
-              
-  /laporan/search:
-    post:
-        tags:
-            - Laporan
-        summary: Cari Laporan (FAISS/Text)
-        parameters:
-            - in: body
-              name: body
-              schema:
-                $ref: '#/definitions/Query'
-        responses:
-            '200':
-                description: Search results
+            $ref: '#/definitions/Laporan'
+    put:
+      tags: [Laporan]
+      summary: Update Laporan
+      parameters:
+        - in: body
+          name: body
+          schema:
+             $ref: '#/definitions/Laporan' # Partial update allowed
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Laporan]
+      summary: Delete Laporan
+      responses:
+        '200':
+          description: Deleted
 
-  # --- CPPT ---
+  /laporan/search:
+    get:
+      tags: [Laporan]
+      summary: Search Laporan (Text Based)
+      parameters:
+        - name: q
+          in: query
+          required: true
+          type: string
+      responses:
+        '200':
+          description: Search results
+
+  # ================= CPPT =================
   /cppt/:
     get:
-      tags:
-        - CPPT
-      summary: Get All CPPT
+      tags: [CPPT]
+      summary: List All CPPT
       responses:
         '200':
           schema:
@@ -552,9 +542,8 @@ paths:
             items:
               $ref: '#/definitions/CPPT'
     post:
-      tags:
-        - CPPT
-      summary: Buat CPPT Baru (Shift Otomatis, Cek Laporan)
+      tags: [CPPT]
+      summary: Create CPPT (Auto Shift)
       parameters:
         - in: body
           name: body
@@ -568,51 +557,38 @@ paths:
     parameters:
       - name: cppt_id
         in: path
-        type: integer
         required: true
+        type: integer
     get:
-      tags:
-        - CPPT
-      summary: Get One CPPT
+      tags: [CPPT]
+      summary: Get CPPT Detail
       responses:
         '200':
           schema:
             $ref: '#/definitions/CPPT'
     put:
-      tags:
-        - CPPT
+      tags: [CPPT]
       summary: Update CPPT
       parameters:
         - in: body
           name: body
           schema:
-            type: object
-            properties:
-                subjective: 
-                    type: string
-                objective:
-                    type: string
-                assessment:
-                    type: string
-                plan:
-                    type: string
+             $ref: '#/definitions/CPPT'
       responses:
         '200':
           description: Updated
     delete:
-      tags:
-        - CPPT
+      tags: [CPPT]
       summary: Delete CPPT
       responses:
         '200':
           description: Deleted
 
-  # --- INTERVENSI ---
+  # ================= INTERVENSI =================
   /intervensi/:
     get:
-      tags:
-        - Intervensi
-      summary: Get All Intervensi
+      tags: [Intervensi]
+      summary: List Intervensi
       responses:
         '200':
           schema:
@@ -620,9 +596,8 @@ paths:
             items:
               $ref: '#/definitions/Intervensi'
     post:
-      tags:
-        - Intervensi
-      summary: Buat Intervensi Baru
+      tags: [Intervensi]
+      summary: Create Intervensi
       parameters:
         - in: body
           name: body
@@ -639,41 +614,49 @@ paths:
         required: true
         type: integer
     get:
-      tags:
-        - Intervensi
-      summary: Detail Intervensi
+      tags: [Intervensi]
+      summary: Get Intervensi Detail
       responses:
         '200':
           schema:
             $ref: '#/definitions/Intervensi'
     put:
-      tags:
-        - Intervensi
+      tags: [Intervensi]
       summary: Update Intervensi
       parameters:
         - in: body
           name: body
           schema:
-            $ref: '#/definitions/Intervensi'
+            $ref: '#/definitions/IntervensiInput'
       responses:
         '200':
           description: Updated
     delete:
-      tags:
-        - Intervensi
-      summary: Hapus Intervensi
+      tags: [Intervensi]
+      summary: Delete Intervensi
       responses:
         '200':
           description: Deleted
 
-  # --- PDF PROCESSING ---
+  /intervensi/search:
+    post:
+      tags: [Intervensi]
+      summary: Search Intervensi
+      parameters:
+        - in: body
+          name: body
+          schema:
+            $ref: '#/definitions/Query'
+      responses:
+        '200':
+          description: Found
+
+  # ================= PDF PROCESSING =================
   /pdf/process-assesmen:
     post:
-      tags:
-        - PDF Processing
-      summary: Upload PDF Assesmen
-      consumes:
-        - multipart/form-data
+      tags: [PDF Processing]
+      summary: Upload PDF Assesmen (Admin/Ketim)
+      consumes: [multipart/form-data]
       parameters:
         - name: file
           in: formData
@@ -685,11 +668,9 @@ paths:
 
   /pdf/process-lab:
     post:
-      tags:
-        - PDF Processing
-      summary: Upload PDF Lab
-      consumes:
-        - multipart/form-data
+      tags: [PDF Processing]
+      summary: Upload PDF Hasil Lab
+      consumes: [multipart/form-data]
       parameters:
         - name: file
           in: formData
@@ -703,13 +684,25 @@ paths:
         '200':
           description: Processed
 
+  /pdf/process-permenkes:
+    post:
+      tags: [PDF Processing]
+      summary: Upload PDF Permenkes (Admin Only)
+      consumes: [multipart/form-data]
+      parameters:
+        - name: file
+          in: formData
+          type: file
+          required: true
+      responses:
+        '200':
+          description: Processed
+
   /pdf/process-siki-slki-sdki:
     post:
-      tags:
-        - PDF Processing
-      summary: Upload PDF Referensi (Admin/Ketim)
-      consumes:
-        - multipart/form-data
+      tags: [PDF Processing]
+      summary: Upload PDF Referensi SDKI/SIKI/SLKI
+      consumes: [multipart/form-data]
       parameters:
         - name: file
           in: formData
