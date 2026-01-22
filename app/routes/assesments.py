@@ -296,13 +296,37 @@ def search_assesments():
 @assesment_bp.route("/questions", methods=["GET"])
 @jwt_required()
 def get_assesmen_questions():
+    # GENERAL FIELDS FIXED (TIDAK DIHASILKAN AI)
+    FIXED_GENERAL_FIELDS = [
+        "Berapa nomor rekam medis pasien?",
+        "Siapa nama lengkap pasien?",
+        "Apa jenis kelamin pasien?",
+        "Kapan tanggal lahir pasien?",
+        "Apa status perkawinan pasien?",
+        "Dimana alamat pasien?",
+        "Apa pekerjaan pasien?",
+        "Siia nama penanggung jawab pasien?",
+        "Apa hubungan penanggung jawab dengan pasien?",
+        "Bagaimana kontak penanggung jawab yang bisa dihubungi?",
+        "Tanggal berapa pasien melakukan kunjungan?",
+        "Jam berapa pasien tiba di rumah sakit?",
+        "Bagaimana cara masuk pasien ke rumah sakit (berjalan kaki/kursi roda/brankar)?",
+        "Pasien masuk ke poliklinik mana?",
+        "Apakah pasien datang dengan rujukan?",
+        "Siapa pendamping pasien saat datang?",
+        "Kelas pelayanan apa yang digunakan pasien?",
+        "Apa sumber data anamnesa yang digunakan?",
+        "Keluhan yang dirasakan pasien?"
+    ]
+
     if not os.path.exists(FAISS_INDEX_FILE) or not os.path.exists(PICKLE_FILE):
-        # Jika belum ada data historis, return pesan ramah (bukan 404 error keras)
         return jsonify({
-            "status": 200, 
-            "message": "Belum ada data historis untuk dianalisis.", 
+            "status": 200,
+            "message": "Belum ada data historis untuk dianalisis.",
             "data": {
-                "general_fields": [], "pasien": [], "perawat": []
+                "general_fields": FIXED_GENERAL_FIELDS,
+                "pasien": [],
+                "perawat": []
             }
         }), 200
 
@@ -310,29 +334,35 @@ def get_assesmen_questions():
     all_chunks = list(mapping.values())
 
     if not all_chunks:
-        return jsonify({"status": 200, "message": "Data historis kosong", "data": {"general_fields": [], "pasien": [], "perawat": []}}), 200
+        return jsonify({
+            "status": 200,
+            "message": "Data historis kosong",
+            "data": {
+                "general_fields": FIXED_GENERAL_FIELDS,
+                "pasien": [],
+                "perawat": []
+            }
+        }), 200
 
     # Ambil 20 data terakhir agar konteks cukup luas
     context_text = "\n".join(all_chunks[-20:])
-    
+
     try:
         prompt = f"""
         Analisis konteks data klinis historis berikut:
         {context_text}
 
-        Tugas: Buat daftar pertanyaan/poin pengecekan untuk Asesmen Awal Keperawatan yang komprehensif (RAG-based).
-        Output WAJIB berupa JSON dengan 3 key utama, masing-masing berisi ARRAY string sebanyak TEPAT 10 ITEM.
+        Tugas:
+        Buat daftar pertanyaan asesmen keperawatan berbasis RAG.
 
-        Struktur Output:
-        1. "general_fields": 10 pertanyaan/checklist yang memastikan kelengkapan SEMUA field asesmen standar (TTV, Fisik, Riwayat, Alergi, Nyeri, Gizi, Risiko Jatuh, Psikososial, Spiritual, Edukasi). Pastikan mencakup seluruh spektrum asesmen.
-        2. "pasien": 10 pertanyaan wawancara (anamnesa) yang ditanyakan langsung kepada pasien (Data Subjektif) yang sopan dan mudah dimengerti.
-        3. "perawat": 10 instruksi observasi atau tindakan pemeriksaan fisik spesifik yang harus dilakukan perawat (Data Objektif).
+        Output WAJIB berupa JSON dengan 2 key utama:
+        1. "pasien" → ARRAY berisi TEPAT 10 pertanyaan wawancara pasien (data subjektif)
+        2. "perawat" → ARRAY berisi TEPAT 10 instruksi observasi/pemeriksaan fisik (data objektif)
 
-        Contoh format JSON:
+        Contoh format:
         {{
-          "general_fields": ["Apakah TTV lengkap?", "Apakah skrining jatuh terisi?", ...],
-          "pasien": ["Apa keluhan utama ibu saat ini?", "Apakah ada alergi obat?", ...],
-          "perawat": ["Lakukan auskultasi dada", "Periksa adanya edema ekstremitas", ...]
+          "pasien": ["Apa keluhan utama Anda hari ini?", "..."],
+          "perawat": ["Periksa tekanan darah pasien", "..."]
         }}
         """
 
@@ -343,21 +373,32 @@ def get_assesmen_questions():
                 {"role": "user", "content": prompt}
             ]
         )
-        
+
         ai_resp = completion.choices[0].message.content
+
+        # Bersihkan jika AI membungkus dengan ```json
         ai_json = re.sub(r"^```(?:json)?|```$", "", ai_resp.strip(), flags=re.MULTILINE)
+
         parsed_questions = json.loads(ai_json)
-        
-        # Ensure structure consistency
-        for key in ["general_fields", "pasien", "perawat"]:
-            if key not in parsed_questions:
-                parsed_questions[key] = []
-        
+
+        # Pastikan struktur konsisten
+        if "pasien" not in parsed_questions:
+            parsed_questions["pasien"] = []
+        if "perawat" not in parsed_questions:
+            parsed_questions["perawat"] = []
+
         return jsonify({
-            "status": 200, 
-            "message": "Daftar pertanyaan berhasil dibuat", 
-            "data": parsed_questions
+            "status": 200,
+            "message": "Daftar pertanyaan berhasil dibuat",
+            "data": {
+                "general_fields": FIXED_GENERAL_FIELDS,
+                "pasien": parsed_questions["pasien"],
+                "perawat": parsed_questions["perawat"]
+            }
         }), 200
 
     except Exception as e:
-        return jsonify({"status": 500, "message": f"Gagal membuat pertanyaan (AI Error): {str(e)}"}), 500
+        return jsonify({
+            "status": 500,
+            "message": f"Gagal membuat pertanyaan (AI Error): {str(e)}"
+        }), 500
