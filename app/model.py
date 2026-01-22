@@ -22,7 +22,6 @@ class User(db.Model):
     __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
-    # Gunakan db.Enum(RoleEnum) agar kompatibel
     role = db.Column(db.Enum(RoleEnum), nullable=True) 
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.Text, nullable=False)
@@ -64,7 +63,11 @@ class Patient(db.Model):
     )
 
     users = db.relationship("User", secondary=patient_user, back_populates="patients")
+    
+    # Relasi ke Assesment
+    # Patient bisa memiliki banyak assesment, tapi assesment bisa dibuat tanpa patient (di sisi Assesment)
     assesments = db.relationship("Assesment", back_populates="patient", cascade="all, delete-orphan")
+    
     laporans = db.relationship("Laporan", back_populates="patient", cascade="all, delete-orphan")
     cppts = db.relationship("CPPT", back_populates="patient", cascade="all, delete-orphan")
     intervensis = db.relationship("Intervensi", back_populates="patient", cascade="all, delete-orphan")
@@ -82,10 +85,13 @@ class Assesment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     tanggal = db.Column(db.DateTime, default=datetime.utcnow)
     
-    # --- PERBAIKAN: Ganti JSONB (Postgres only) ke JSON (Generic) ---
     data = db.Column(JSON, nullable=False, default={}) 
     
-    patient_id = db.Column(db.Integer, db.ForeignKey("patients.id"), nullable=False)
+    # --- PERUBAHAN DI SINI ---
+    # nullable=True: Assesment bisa dibuat tanpa harus ada patient_id (Berdiri Sendiri)
+    # ondelete='SET NULL': Jika pasien dihapus, assesment tetap ada (tapi patient_id jadi NULL)
+    patient_id = db.Column(db.Integer, db.ForeignKey("patients.id", ondelete='SET NULL'), nullable=True)
+    
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     
     patient = db.relationship("Patient", back_populates="assesments")
