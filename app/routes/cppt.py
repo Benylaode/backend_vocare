@@ -38,15 +38,13 @@ def determine_shift(dt):
 
 def ensure_string(value):
     """
-    FIX ERROR: (psycopg2.ProgrammingError) can't adapt type 'dict'
-    Mengubah Dict/List menjadi JSON String agar bisa disimpan di kolom Text Database.
+    CRITICAL FIX: Mengubah Dict/List menjadi JSON String.
+    Mencegah error: (psycopg2.ProgrammingError) can't adapt type 'dict'
     """
     if value is None:
         return ""
-    # Jika value adalah Dictionary atau List (JSON Object), dump jadi String
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False)
-    # Jika sudah string atau angka, biarkan
     return str(value)
 
 def search_sdki_siki(query):
@@ -63,7 +61,7 @@ def search_sdki_siki(query):
             mapping = pickle.load(f)
         
         query_vector = model.encode([query]).astype("float32")
-        k = 5 # Ambil 5 referensi teratas (SDKI/SIKI paling mirip)
+        k = 5 # Ambil 5 referensi teratas
         D, I = index.search(query_vector, k)
         
         results = []
@@ -79,8 +77,9 @@ def search_sdki_siki(query):
         print(f"RAG Search Error: {e}")
         return ""
 
-# --- Routes ---
+# --- CRUD Routes ---
 
+# 1. READ ALL (List)
 @cppt_bp.route("/", methods=["GET"])
 @jwt_required()
 def get_cppts():
@@ -88,6 +87,7 @@ def get_cppts():
     data = [{
         "id": c.id, 
         "patient_id": c.patient_id, 
+        "patient_name": c.patient.nama if c.patient else "Unknown",
         "tanggal": c.tanggal.isoformat(),
         "shift": c.shift, 
         "subjective": c.subjective, 
@@ -97,6 +97,32 @@ def get_cppts():
     } for c in cppts]
     return jsonify({"status": 200, "message": "Success", "data": data}), 200
 
+
+# 2. READ ONE (Detail)
+@cppt_bp.route("/<int:cppt_id>", methods=["GET"])
+@jwt_required()
+def get_cppt_detail(cppt_id):
+    c = CPPT.query.get(cppt_id)
+    if not c:
+        return jsonify({"status": 404, "message": "CPPT not found"}), 404
+
+    data = {
+        "id": c.id, 
+        "patient_id": c.patient_id, 
+        "patient_name": c.patient.nama if c.patient else "Unknown",
+        "tanggal": c.tanggal.isoformat(),
+        "shift": c.shift, 
+        "subjective": c.subjective, 
+        "objective": c.objective,
+        "assessment": c.assessment, 
+        "plan": c.plan,
+        "keterangan": c.keterangan,
+        "dokter": c.dokter
+    }
+    return jsonify({"status": 200, "message": "Success", "data": data}), 200
+
+
+# 3. CREATE (POST) with RAG & AI
 @cppt_bp.route("/", methods=["POST"])
 @jwt_required()
 def create_cppt():
@@ -109,7 +135,7 @@ def create_cppt():
     if not patient_id or not query:
         return jsonify({"status": 400, "message": "Patient ID and Query required"}), 400
 
-    # 1. Ambil Data Pasien & Laporan Terakhir (Untuk konteks diagnosa awal)
+    # Ambil Data Pasien & Laporan Terakhir
     patient = Patient.query.get(patient_id)
     if not patient:
         return jsonify({"status": 404, "message": "Patient not found"}), 404
@@ -120,38 +146,31 @@ def create_cppt():
     if laporan:
         laporan_context = f"Diagnosa Medis/Keperawatan Sebelumnya: {laporan.SDKI}\nRencana Sebelumnya: {laporan.SIKI}"
     
-    # 2. Lakukan Pencarian RAG (SDKI & SIKI) berdasarkan Query Perawat
-    # Ini memastikan AI mendapatkan referensi buku standar, bukan halusinasi
+    # Pencarian RAG (SDKI & SIKI)
     referensi_standar = search_sdki_siki(query)
     
-    # 3. Susun Prompt Spesifik (SOAP dengan Standar SDKI/SIKI)
+    # Prompt AI
     prompt = f"""
-    Anda adalah Perawat Profesional & Ahli Dokumentasi Medis (Ners).
-    Tugas: Buat catatan perkembangan pasien (CPPT) dalam format SOAP berdasarkan input perawat.
+    Anda adalah Perawat Profesional (Ners).
+    Tugas: Buat CPPT (Catatan Perkembangan Pasien Terintegrasi) format SOAP.
     
-    KONTEKS PASIEN:
-    Nama: {patient.nama}
+    PASIEN: {patient.nama}
     {laporan_context}
     
-    REFERENSI STANDAR KEPERAWATAN (SDKI/SIKI) YANG DITEMUKAN DARI SISTEM:
+    REFERENSI STANDAR (SDKI/SIKI) DARI SISTEM:
     {referensi_standar}
     
-    UPDATE KONDISI DARI PERAWAT (INPUT):
-    "{query}"
+    UPDATE PERAWAT: "{query}"
     
-    INSTRUKSI PENULISAN SOAP (WAJIB DIPATUHI):
-    1. **Subjective (S)**: Ringkas keluhan pasien dari input.
-    2. **Objective (O)**: Ringkas data observasi/TTV dari input.
-    3. **Assessment (A)**: WAJIB MENGGUNAKAN LABEL DIAGNOSIS DARI SDKI (Standar Diagnosis Keperawatan Indonesia) berdasarkan referensi di atas. Jika masalah membaik, tulis "Masalah [Nama Diagnosis SDKI] teratasi sebagian/penuh".
-    4. **Plan (P)**: WAJIB MENGGUNAKAN LABEL INTERVENSI DARI SIKI (Standar Intervensi Keperawatan Indonesia) yang relevan dari referensi.
+    INSTRUKSI:
+    1. **Subjective**: Ringkas keluhan.
+    2. **Objective**: Ringkas observasi.
+    3. **Assessment**: WAJIB gunakan Label DIAGNOSIS SDKI yang relevan dari referensi.
+    4. **Plan**: WAJIB gunakan Label INTERVENSI SIKI yang relevan.
     
-    Format Output WAJIB JSON (tanpa markdown):
+    Output JSON (No Markdown):
     {{
-        "subjective": "...",
-        "objective": "...",
-        "assessment": "...",
-        "plan": "...",
-        "keterangan": "..."
+        "subjective": "...", "objective": "...", "assessment": "...", "plan": "...", "keterangan": "..."
     }}
     """
     
@@ -161,21 +180,15 @@ def create_cppt():
             messages=[{"role": "user", "content": prompt}]
         )
         ai_resp = completion.choices[0].message.content
-        
-        # Bersihkan Markdown JSON jika ada
         ai_clean = re.sub(r"^```json\s*|\s*```$", "", ai_resp.strip(), flags=re.MULTILINE)
-        
         parsed = json.loads(ai_clean)
-        
     except Exception as e:
-        # Fallback jika AI gagal parsing, kembalikan error agar frontend tahu
-        return jsonify({"status": 500, "message": f"AI Processing Error: {str(e)}"}), 500
+        return jsonify({"status": 500, "message": f"AI Error: {str(e)}"}), 500
 
     now = datetime.utcnow()
     shift = determine_shift(now)
 
-    # 4. SIMPAN KE DB DENGAN SAFETY CHECK (ensure_string)
-    # Ini mencegah error "can't adapt type 'dict'" jika AI mengembalikan nested JSON
+    # Simpan ke DB dengan ensure_string
     try:
         new_cppt = CPPT(
             patient_id=patient_id, 
@@ -194,18 +207,16 @@ def create_cppt():
         db.session.commit()
     except Exception as db_err:
         db.session.rollback()
-        return jsonify({"status": 500, "message": f"Database Save Error: {str(db_err)}"}), 500
+        return jsonify({"status": 500, "message": f"Database Error: {str(db_err)}"}), 500
 
     return jsonify({
         "status": 201, 
-        "message": f"CPPT berhasil dibuat (Shift {shift}) dengan standar SDKI/SIKI", 
-        "data": {
-            "id": new_cppt.id,
-            "assessment": new_cppt.assessment,
-            "plan": new_cppt.plan
-        }
+        "message": f"CPPT Created (Shift {shift})", 
+        "data": {"id": new_cppt.id}
     }), 201
 
+
+# 4. UPDATE (PUT)
 @cppt_bp.route("/<int:cppt_id>", methods=["PUT"])
 @jwt_required()
 def update_cppt(cppt_id):
@@ -215,21 +226,32 @@ def update_cppt(cppt_id):
     data = request.get_json()
     fields = ["subjective", "objective", "assessment", "plan", "keterangan", "dokter", "shift"]
     
-    for f in fields:
-        if f in data: 
-            val = data[f]
-            # Pastikan tipe data string saat update manual juga
-            setattr(cppt, f, ensure_string(val))
+    try:
+        for f in fields:
+            if f in data: 
+                # PENTING: Gunakan ensure_string juga di sini
+                # Jika frontend mengirim JSON Object untuk update, harus distringify
+                val = ensure_string(data[f])
+                setattr(cppt, f, val)
 
-    db.session.commit()
-    return jsonify({"status": 200, "message": "CPPT updated"}), 200
+        db.session.commit()
+        return jsonify({"status": 200, "message": "CPPT updated successfully"}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"status": 500, "message": f"Update Failed: {str(e)}"}), 500
 
+
+# 5. DELETE (Delete)
 @cppt_bp.route("/<int:cppt_id>", methods=["DELETE"])
 @jwt_required()
 def delete_cppt(cppt_id):
     cppt = CPPT.query.get(cppt_id)
     if not cppt: return jsonify({"status": 404, "message": "CPPT not found"}), 404
     
-    db.session.delete(cppt)
-    db.session.commit()
-    return jsonify({"status": 200, "message": "CPPT deleted"}), 200
+    try:
+        db.session.delete(cppt)
+        db.session.commit()
+        return jsonify({"status": 200, "message": "CPPT deleted successfully"}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"status": 500, "message": f"Delete Failed: {str(e)}"}), 500
