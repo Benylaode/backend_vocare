@@ -62,7 +62,29 @@ def load_mapping():
             return pickle.load(f)
     return {}
 
+def delete_from_faiss(assesment_id):
+    """Menghapus ID dari FAISS index dan Mapping Pickle"""
+    global FAISS_INDEX
+    index = initialize_faiss_index()
+    mapping = load_mapping()
 
+    # Hapus dari Index FAISS
+    try:
+        index.remove_ids(np.array([assesment_id], dtype=np.int64))
+        save_faiss_index()
+    except Exception as e:
+        print(f"Warning: Failed to remove ID {assesment_id} from FAISS: {e}")
+
+    # Hapus dari Mapping Pickle
+    if assesment_id in mapping:
+        del mapping[assesment_id]
+        with open(PICKLE_FILE, "wb") as f:
+            pickle.dump(mapping, f)
+
+
+# === CRUD ENDPOINTS ===
+
+# 1. READ ALL (GET)
 @assesment_bp.route("/", methods=["GET"])
 @jwt_required()
 def get_assesments():
@@ -73,7 +95,7 @@ def get_assesments():
     query = Assesment.query.outerjoin(Patient)
 
     if user.role.name != 'admin' and user.ruangan:
-        # Filter: Assesment di ruangan user ATAU Assesment yang dibuat user itu sendiri (walau tanpa pasien)
+        # Filter: Assesment di ruangan user ATAU Assesment yang dibuat user itu sendiri
         query = query.filter(
             or_(
                 Patient.ruangan == user.ruangan,
@@ -97,12 +119,12 @@ def get_assesments():
             "tanggal": a.tanggal.isoformat(),
             "perawat": a.user.username if a.user else (a.perawat if hasattr(a, 'perawat') else "Unknown"),
             "data": konten_data,
-            # Handle jika patient None (Standalone Assesment)
             "patient_rm": a.patient.no_rekam_medis if a.patient else "Draft / Belum Ditentukan"
         })
     return jsonify({"status": 200, "message": "Success", "data": data}), 200
 
 
+# 2. READ ONE (GET)
 @assesment_bp.route("/<int:assesment_id>", methods=["GET"])
 @jwt_required()
 def get_assesment(assesment_id):
@@ -129,6 +151,7 @@ def get_assesment(assesment_id):
     return jsonify({"status": 200, "message": "Success", "data": data}), 200
 
 
+# 3. CREATE (POST)
 @assesment_bp.route("/", methods=["POST"])
 @jwt_required()  
 def create_assesment():
@@ -137,21 +160,20 @@ def create_assesment():
     
     payload = request.get_json()
     
-    # Validasi: Query tetap wajib untuk AI, tapi patient_id OPSIONAL
     if not payload or not payload.get("query"):
         return jsonify({"status": 400, "message": "Field required: query"}), 400
 
     query = payload["query"]
     perawat_name = user.username 
     
-    # Ambil patient_id (bisa None)
+    # Patient ID Opsional (Standalone mode)
     patient_id = payload.get("patient_id")
     
     rm_in_query = extract_medical_record_number(query)
     keyword_found = query_contains_rm_keyword(query)
     patient = None
 
-    # Logika Standalone: Validasi hanya jalan jika patient_id dikirim
+    # Validasi jika patient_id disertakan
     if patient_id:
         if not keyword_found and not rm_in_query:
              return jsonify({
@@ -166,7 +188,7 @@ def create_assesment():
         if user.role.name != 'admin' and user.ruangan and patient.ruangan != user.ruangan:
              return jsonify({"status": 403, "message": f"Akses Ditolak. Pasien di ruangan {patient.ruangan}."}), 403
     
-    # RAG Retrieval
+    # RAG: Search context
     query_vector = model.encode([query], convert_to_numpy=True).astype("float32")
     index = initialize_faiss_index()
     mapping = load_mapping()
@@ -193,25 +215,15 @@ def create_assesment():
 
         Susun JSON terstruktur untuk ASESMEN AWAL KEPERAWATAN RAWAT INAP.
         Root key: "asesmen_awal_keperawatan".
-        Pastikan semua field:
-        informasi_umum, data_kunjungan, keluhan_utama, pemeriksaan_fisik, 
-        tanda_vital, pemeriksaan_sistem, alergi, asesmen_nyeri, 
-        skrining_gizi (berat_badan, tinggi_badan, IMT, status_gizi), 
-        skrining_risiko_jatuh, status_psikososial, rencana_perawatan, 
-        masalah_keperawatan (analisis SDKI), edukasi, serta 
-        field kosong wajib bernama rencana_asuhan_keperawatan.
-
-        Pastikan JSON tidak ada bagian <｜begin▁of▁sentence｜>.
-
+        Pastikan semua field terisi: informasi_umum, tanda_vital, keluhan_utama, pemeriksaan_fisik, rencana_asuhan_keperawatan, dll.
         Nomor rekam medis pasien: {rm_info}
-        Query baru pasien:
-        {query}
+        Query baru pasien: {query}
         """
 
         completion = client.chat.completions.create(
             model=api_model,
             messages=[
-                {"role": "system", "content": "Anda adalah asisten medis yang menyusun data asesmen berdasarkan referensi historis."},
+                {"role": "system", "content": "Anda adalah asisten medis yang menyusun data asesmen."},
                 {"role": "user", "content": prompt},
             ],
         )
@@ -224,9 +236,9 @@ def create_assesment():
         parsed_data = {"error": str(e), "raw_response": ai_json if 'ai_json' in locals() else ""}
         return jsonify({"status": 500, "message": f"AI processing failed: {str(e)}"}), 500
 
-    # Simpan ke DB (Standalone Friendly)
+    # Simpan ke DB
     new_assesment = Assesment(
-        patient_id=patient.id if patient else None, # KUNCI: Bisa NULL
+        patient_id=patient.id if patient else None,
         user_id=user.id, 
         tanggal=datetime.utcnow(),
         data=parsed_data 
@@ -234,14 +246,13 @@ def create_assesment():
     db.session.add(new_assesment)
     db.session.commit()
 
-    # Update FAISS hanya jika ada pasien (agar konteks pencarian valid)
+    # Update FAISS jika ada pasien (agar relevan untuk pencarian masa depan)
     if patient:
         try:
             summary_text = f"RM:{patient.no_rekam_medis} | {query}"
             new_id = new_assesment.id 
             index.add_with_ids(query_vector, np.array([new_id]).astype('int64'))
             save_faiss_index()
-            
             mapping[new_id] = summary_text
             with open(PICKLE_FILE, "wb") as f:
                 pickle.dump(mapping, f)
@@ -253,12 +264,78 @@ def create_assesment():
         "message": "Assesment created successfully",
         "data": {
             "id": new_assesment.id,
-            "perawat": perawat_name,
-            "tanggal": new_assesment.tanggal.isoformat(),
             "patient_id": new_assesment.patient_id,
             "data": parsed_data,
         },
     }), 201
+
+
+# 4. UPDATE (PUT) - NEW!
+@assesment_bp.route("/<int:assesment_id>", methods=["PUT"])
+@jwt_required()
+def update_assesment(assesment_id):
+    """
+    Update data asesmen (hasil JSON) atau menautkan ke pasien (patient_id).
+    """
+    assesment = Assesment.query.get(assesment_id)
+    if not assesment:
+        return jsonify({"status": 404, "message": "Assesment not found"}), 404
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"status": 400, "message": "No data provided"}), 400
+
+    # A. Update Data JSON (Manual Correction dari Frontend)
+    if "data" in data:
+        assesment.data = data["data"]
+
+    # B. Update/Link Patient ID
+    if "patient_id" in data:
+        new_patient_id = data["patient_id"]
+        # Jika user mengirim null, berarti unlink
+        if new_patient_id is None:
+            assesment.patient_id = None
+        else:
+            # Validasi pasien ada
+            patient = Patient.query.get(new_patient_id)
+            if not patient:
+                 return jsonify({"status": 404, "message": "Patient ID not found"}), 404
+            assesment.patient_id = new_patient_id
+
+    try:
+        db.session.commit()
+        return jsonify({"status": 200, "message": "Assesment updated successfully"}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"status": 500, "message": f"Database Error: {str(e)}"}), 500
+
+
+# 5. DELETE (DELETE) - NEW!
+@assesment_bp.route("/<int:assesment_id>", methods=["DELETE"])
+@jwt_required()
+def delete_assesment(assesment_id):
+    """
+    Hapus asesmen dari Database DAN dari Index FAISS (agar tidak muncul di RAG lagi).
+    """
+    assesment = Assesment.query.get(assesment_id)
+    if not assesment:
+        return jsonify({"status": 404, "message": "Assesment not found"}), 404
+
+    try:
+        # 1. Hapus dari Database
+        db.session.delete(assesment)
+        db.session.commit()
+
+        # 2. Hapus dari FAISS (Pembersihan Data)
+        delete_from_faiss(assesment_id)
+
+        return jsonify({"status": 200, "message": "Assesment deleted successfully"}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"status": 500, "message": f"Delete Failed: {str(e)}"}), 500
+
+
+# === SEARCH & QUESTIONS ===
 
 @assesment_bp.route("/search", methods=["POST"])
 @jwt_required()
@@ -290,13 +367,11 @@ def search_assesments():
 
     return jsonify({"status": 200, "message": "Success", "data": results}), 200
 
-# ==============================================================
-# ENDPOINT QUESTIONS (10 General, 10 Pasien, 10 Perawat)
-# ==============================================================
+
 @assesment_bp.route("/questions", methods=["GET"])
 @jwt_required()
 def get_assesmen_questions():
-    # GENERAL FIELDS FIXED (TIDAK DIHASILKAN AI)
+    # GENERAL FIELDS FIXED (Hardcoded sesuai permintaan sebelumnya)
     FIXED_GENERAL_FIELDS = [
         "Berapa nomor rekam medis pasien?",
         "Siapa nama lengkap pasien?",
@@ -305,24 +380,23 @@ def get_assesmen_questions():
         "Apa status perkawinan pasien?",
         "Dimana alamat pasien?",
         "Apa pekerjaan pasien?",
-        "Siia nama penanggung jawab pasien?",
+        "Siapa nama penanggung jawab pasien?",
         "Apa hubungan penanggung jawab dengan pasien?",
-        "Bagaimana kontak penanggung jawab yang bisa dihubungi?",
-        "Tanggal berapa pasien melakukan kunjungan?",
-        "Jam berapa pasien tiba di rumah sakit?",
-        "Bagaimana cara masuk pasien ke rumah sakit (berjalan kaki/kursi roda/brankar)?",
+        "Bagaimana kontak penanggung jawab?",
+        "Tanggal/Jam berapa pasien tiba?",
+        "Cara masuk (Jalan/Kursi Roda/Brankar)?",
         "Pasien masuk ke poliklinik mana?",
         "Apakah pasien datang dengan rujukan?",
         "Siapa pendamping pasien saat datang?",
-        "Kelas pelayanan apa yang digunakan pasien?",
-        "Apa sumber data anamnesa yang digunakan?",
+        "Kelas pelayanan apa yang digunakan?",
+        "Apa sumber data anamnesa?",
         "Keluhan yang dirasakan pasien?"
     ]
 
     if not os.path.exists(FAISS_INDEX_FILE) or not os.path.exists(PICKLE_FILE):
         return jsonify({
             "status": 200,
-            "message": "Belum ada data historis untuk dianalisis.",
+            "message": "Belum ada data historis.",
             "data": {
                 "general_fields": FIXED_GENERAL_FIELDS,
                 "pasien": [],
@@ -335,16 +409,11 @@ def get_assesmen_questions():
 
     if not all_chunks:
         return jsonify({
-            "status": 200,
-            "message": "Data historis kosong",
-            "data": {
-                "general_fields": FIXED_GENERAL_FIELDS,
-                "pasien": [],
-                "perawat": []
-            }
+            "status": 200, 
+            "message": "Data historis kosong", 
+            "data": {"general_fields": FIXED_GENERAL_FIELDS, "pasien": [], "perawat": []}
         }), 200
 
-    # Ambil 20 data terakhir agar konteks cukup luas
     context_text = "\n".join(all_chunks[-20:])
 
     try:
@@ -352,40 +421,24 @@ def get_assesmen_questions():
         Analisis konteks data klinis historis berikut:
         {context_text}
 
-        Tugas:
-        Buat daftar pertanyaan asesmen keperawatan berbasis RAG.
-
-        Output WAJIB berupa JSON dengan 2 key utama:
-        1. "pasien" → ARRAY berisi TEPAT 10 pertanyaan wawancara pasien (data subjektif)
-        2. "perawat" → ARRAY berisi TEPAT 10 instruksi observasi/pemeriksaan fisik (data objektif)
-
-        Contoh format:
-        {{
-          "pasien": ["Apa keluhan utama Anda hari ini?", "..."],
-          "perawat": ["Periksa tekanan darah pasien", "..."]
-        }}
+        Tugas: Buat daftar pertanyaan asesmen keperawatan berbasis RAG.
+        Output WAJIB berupa JSON dengan 2 key utama (general_fields sudah ada, tidak perlu dibuat):
+        1. "pasien" → ARRAY berisi TEPAT 10 pertanyaan wawancara pasien.
+        2. "perawat" → ARRAY berisi TEPAT 10 instruksi observasi/pemeriksaan fisik.
         """
 
         completion = client.chat.completions.create(
             model=api_model,
-            messages=[
-                {"role": "system", "content": "Anda adalah Konsultan Keperawatan Senior."},
-                {"role": "user", "content": prompt}
-            ]
+            messages=[{"role": "user", "content": prompt}]
         )
 
         ai_resp = completion.choices[0].message.content
-
-        # Bersihkan jika AI membungkus dengan ```json
         ai_json = re.sub(r"^```(?:json)?|```$", "", ai_resp.strip(), flags=re.MULTILINE)
-
         parsed_questions = json.loads(ai_json)
 
-        # Pastikan struktur konsisten
-        if "pasien" not in parsed_questions:
-            parsed_questions["pasien"] = []
-        if "perawat" not in parsed_questions:
-            parsed_questions["perawat"] = []
+        # Safety check
+        if "pasien" not in parsed_questions: parsed_questions["pasien"] = []
+        if "perawat" not in parsed_questions: parsed_questions["perawat"] = []
 
         return jsonify({
             "status": 200,
@@ -398,7 +451,4 @@ def get_assesmen_questions():
         }), 200
 
     except Exception as e:
-        return jsonify({
-            "status": 500,
-            "message": f"Gagal membuat pertanyaan (AI Error): {str(e)}"
-        }), 500
+        return jsonify({"status": 500, "message": f"AI Error: {str(e)}"}), 500
