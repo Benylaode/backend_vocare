@@ -119,8 +119,10 @@ def get_assesments():
             "tanggal": a.tanggal.isoformat(),
             "perawat": a.user.username if a.user else (a.perawat if hasattr(a, 'perawat') else "Unknown"),
             "data": konten_data,
+            "patient_id": a.patient_id,  # ← PASTI ADA (None / int)
             "patient_rm": a.patient.no_rekam_medis if a.patient else "Draft / Belum Ditentukan"
         })
+
     return jsonify({"status": 200, "message": "Success", "data": data}), 200
 
 

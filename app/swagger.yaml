@@ -1,7 +1,7 @@
 swagger: "2.0"
 info:
   title: Medical Records API (Vocare v1.4.3)
-  description: "Dokumentasi API lengkap untuk Manajemen Rekam Medis AI-Assisted. Mendukung RAG (Retrieval-Augmented Generation), OCR untuk PDF, dan integrasi FAISS untuk asuhan keperawatan pintar."
+  description: "API Manajemen Rekam Medis AI-Assisted dengan dukungan RAG (Retrieval-Augmented Generation). Mendukung OCR PDF, pencarian semantik FAISS, dan otomatisasi Asuhan Keperawatan."
   version: 1.4.3
 host: localhost:5000
 basePath: /
@@ -27,7 +27,7 @@ tags:
   - name: Auth
     description: Autentikasi User & Profil
   - name: Patients
-    description: Manajemen Pasien & Penautan Asesmen
+    description: Data Pasien & Penautan Asesmen
   - name: Assesments
     description: CRUD Asesmen, Semantic Search, & AI Smart Questions
   - name: Laporan
@@ -37,10 +37,10 @@ tags:
   - name: Intervensi
     description: Implementasi & Evaluasi Tindakan
   - name: PDF Processing
-    description: Upload PDF & RAG Indexing (Knowledge Base)
+    description: Upload & Ekstraksi Dokumen (RAG Knowledge Base)
 
 definitions:
-  # --- MODELS ---
+  # --- USER & AUTH ---
   User:
     type: object
     properties:
@@ -50,6 +50,17 @@ definitions:
       role: { type: string, enum: [admin, user, ketim] }
       ruangan: { type: string }
 
+  NewUser:
+    type: object
+    required: [username, email, password]
+    properties:
+      username: { type: string }
+      email: { type: string }
+      password: { type: string, format: password }
+      role: { type: string, enum: [admin, user, ketim], default: user }
+      ruangan: { type: string }
+
+  # --- PATIENT ---
   PatientInput:
     type: object
     required: [nama, no_rekam_medis, ruangan, tgl_lahir]
@@ -60,10 +71,22 @@ definitions:
       tgl_lahir: { type: string, format: date, example: "1990-01-01" }
       jenis_kelamin: { type: string, enum: [Laki-laki, Perempuan] }
       alamat: { type: string }
-      status_rawat: { type: string, enum: [rawat_inap, rawat_jalan, pulang, meninggal], default: "rawat_inap" }
+      penanggung_jawab: { type: string }
+      status_rawat: { type: string, default: "rawat_inap" }
       assesment_id:
         type: integer
-        description: "Menautkan draf asesmen yang sudah ada ke pasien baru ini."
+        description: "Opsional. Menautkan draf asesmen yang sudah ada ke pasien baru ini."
+
+  # --- MEDICAL RECORDS ---
+  AssesmentDetail:
+    type: object
+    properties:
+      id: { type: integer }
+      tanggal: { type: string, format: date-time }
+      perawat: { type: string }
+      data: { type: object, description: "Hasil ekstraksi JSON oleh AI" }
+      patient_id: { type: integer, allowEmptyValue: true }
+      patient_rm: { type: string, example: "123456 atau Draft / Belum Ditentukan" }
 
   LaporanDetail:
     type: object
@@ -75,48 +98,65 @@ definitions:
       objective: { type: string }
       assessment: { type: string }
       plan: { type: string }
-      tindakan_lanjutan: { type: string }
-      keterangan: { type: string }
       SDKI: { type: array, items: { type: string } }
       SIKI: { type: array, items: { type: string } }
       SLKI: { type: array, items: { type: string } }
       user_id: { type: integer }
 
 paths:
+  # ================= AUTH =================
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Registrasi User Baru
+      security: []
+      parameters:
+        - in: body
+          name: body
+          schema: { $ref: '#/definitions/NewUser' }
+      responses:
+        201: { description: User Created }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login User
+      security: []
+      parameters:
+        - in: body
+          name: body
+          schema:
+            type: object
+            required: [username, password]
+            properties:
+              username: { type: string }
+              password: { type: string, format: password }
+      responses:
+        200: { description: Success, schema: { type: object, properties: { access_token: { type: string } } } }
+
   # ================= PATIENTS =================
   /patients/:
     get:
       tags: [Patients]
-      summary: List Semua Pasien (Filtered by Room)
+      summary: List Pasien (Filtered by Room)
       responses:
         200: { description: Success }
     post:
       tags: [Patients]
-      summary: Register Pasien & Tautkan Asesmen
+      summary: Create Patient & Link Assesment
       parameters:
         - in: body
           name: body
           schema: { $ref: '#/definitions/PatientInput' }
       responses:
-        201: { description: "Pasien terdaftar & Linked to Assessment ID X" }
-
-  /patients/{patient_id}:
-    parameters:
-      - name: patient_id
-        in: path
-        required: true
-        type: integer
-    delete:
-      tags: [Patients]
-      summary: Hapus Pasien
-      responses:
-        200: { description: Pasien dihapus }
+        201: { description: "Pasien Terdaftar & Linked to Assessment" }
 
   # ================= ASSESMENTS =================
   /assesments/:
     get:
       tags: [Assesments]
-      summary: Get All Assesments (Outer Join Patient)
+      summary: Get All Assesments (Outer Join)
+      description: "Menampilkan semua asesmen. Non-admin difilter berdasarkan ruangan atau kepemilikan data."
       responses:
         200: { description: Success }
     post:
@@ -130,9 +170,9 @@ paths:
             required: [query]
             properties:
               query: { type: string }
-              patient_id: { type: integer, description: "Kosongkan jika ingin draf" }
+              patient_id: { type: integer, description: "Kosongkan jika hanya draf" }
       responses:
-        201: { description: Assesment created }
+        201: { description: Created }
 
   /assesments/{assesment_id}:
     parameters:
@@ -142,12 +182,12 @@ paths:
         type: integer
     get:
       tags: [Assesments]
-      summary: Get Single Assesment Detail
+      summary: Get Assesment Detail
       responses:
-        200: { description: Success }
+        200: { schema: { $ref: '#/definitions/AssesmentDetail' } }
     put:
       tags: [Assesments]
-      summary: Update Asesmen / Link Patient ID
+      summary: Update Assesment / Link Patient
       parameters:
         - in: body
           name: body
@@ -155,14 +195,14 @@ paths:
             type: object
             properties:
               data: { type: object }
-              patient_id: { type: integer }
+              patient_id: { type: integer, description: "Kirim null untuk unlink" }
       responses:
         200: { description: Updated }
     delete:
       tags: [Assesments]
-      summary: Hapus Asesmen (SQL & FAISS Index)
+      summary: Delete Assesment (SQL & FAISS Index Sync)
       responses:
-        200: { description: Deleted from DB and FAISS }
+        200: { description: Deleted }
 
   /assesments/search:
     post:
@@ -177,14 +217,14 @@ paths:
             properties:
               query: { type: string }
       responses:
-        200: { description: Search results }
+        200: { description: Success }
 
   /assesments/questions:
     get:
       tags: [Assesments]
-      summary: Get Smart AI Questions (RAG)
+      summary: Get AI Smart Questions (RAG Based)
       responses:
-        200: { description: Daftar pertanyaan berhasil dibuat }
+        200: { description: Success }
 
   # ================= LAPORAN (ASKEB) =================
   /laporan/:
@@ -195,7 +235,7 @@ paths:
         200: { description: Success }
     post:
       tags: [Laporan]
-      summary: Generate ASKEB via AI & RAG
+      summary: Create ASKEB via AI & RAG
       parameters:
         - in: body
           name: body
@@ -206,39 +246,13 @@ paths:
               patient_id: { type: integer }
               query: { type: string }
       responses:
-        201: { description: Laporan Created }
-
-  /laporan/{id}:
-    parameters:
-      - name: id
-        in: path
-        required: true
-        type: integer
-    get:
-      tags: [Laporan]
-      summary: Get Laporan Detail
-      responses:
-        200: { description: success }
-    put:
-      tags: [Laporan]
-      summary: Update Laporan (Manual Correction)
-      parameters:
-        - in: body
-          name: body
-          schema: { $ref: '#/definitions/LaporanDetail' }
-      responses:
-        200: { description: Updated }
-    delete:
-      tags: [Laporan]
-      summary: Delete Laporan
-      responses:
-        200: { description: Deleted }
+        201: { description: Created }
 
   # ================= CPPT =================
   /cppt/:
     post:
       tags: [CPPT]
-      summary: Create CPPT (Auto SOAP generation)
+      summary: Create SOAP generation via AI
       parameters:
         - in: body
           name: body
@@ -248,30 +262,6 @@ paths:
             properties:
               patient_id: { type: integer }
               query: { type: string }
-      responses:
-        201: { description: CPPT Created }
-
-  # ================= INTERVENSI =================
-  /intervensi/:
-    get:
-      tags: [Intervensi]
-      summary: List Intervensi
-      responses:
-        200: { description: Success }
-    post:
-      tags: [Intervensi]
-      summary: Create Implementasi & Evaluasi
-      parameters:
-        - in: body
-          name: body
-          schema:
-            type: object
-            required: [patient_id, implementasi, evaluasi, user_id]
-            properties:
-              patient_id: { type: integer }
-              implementasi: { type: string }
-              evaluasi: { type: string }
-              user_id: { type: integer }
       responses:
         201: { description: Created }
 
@@ -291,4 +281,4 @@ paths:
           type: integer
           required: true
       responses:
-        200: { description: Lab results indexed }
+        200: { description: Indexed }
