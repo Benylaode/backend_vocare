@@ -94,34 +94,77 @@ def create_laporan():
     if not patient:
         return jsonify({"status": 404, "message": "Pasien tidak ditemukan"}), 404
 
+    # Validasi Ruangan (Kecuali Admin)
     if user.role.name != 'admin' and user.ruangan and patient.ruangan != user.ruangan:
         return jsonify({"status": 403, "message": f"Anda hanya boleh menangani pasien di ruangan {user.ruangan}"}), 403
 
+    # ==== 1. RETRIEVAL (RAG) ====
     matches = []
     if os.path.exists(FAISS_INDEX_FILE) and os.path.exists(MAPPING_FILE):
         try:
             with open(MAPPING_FILE, "rb") as f:
                 id_to_text = pickle.load(f)
             index = faiss.read_index(FAISS_INDEX_FILE)
-            matches = search_with_faiss(query_text, index, id_to_text, k=5)
-        except:
+            # Ambil 3 chunk teratas untuk mendapatkan konteks baris tabel yang utuh
+            matches = search_with_faiss(query_text, index, id_to_text, k=3)
+        except Exception as e:
+            print(f"FAISS Error: {e}")
             pass
 
-    context_text = "\n".join(matches)
+    context_text = "\n\n".join(matches) if matches else "Tidak ada referensi ditemukan."
 
-    # ==== PROMPT TIDAK DIUBAH ====
+    # ==== 2. PROMPT STRICT ROW MAPPING (KHUSUS FORMAT PDF 10 PENYAKIT) ====
+    
+    system_prompt = """
+    Anda adalah Sistem Pakar Dokumentasi Keperawatan (Ners).
+    Tugas Anda adalah menyusun CPPT (Format SOAP) berdasarkan "Tabel 10 Penyakit Terbanyak".
+
+    STRUKTUR DATA REFERENSI (PENTING):
+    Referensi yang diberikan berbentuk tabel dengan kolom:
+    [NO] | [SDKI/Diagnosis] | [SIKI (Intervensi) & SLKI (Luaran)] | [Data Subjektif] | [Data Objektif]
+
+    ATURAN "ROW LOCKING" (WAJIB PATUH):
+    1. **Cocokkan Data:** Bandingkan input perawat dengan kolom "Data Subjektif" & "Data Objektif" di referensi.
+    2. **Kunci Baris:** Tentukan Nomor (NO) penyakit yang paling cocok (Misal: No. 1 Nyeri Akut, atau No. 2 Diare).
+    3. **Ekstraksi Satu Baris:** - Ambil **SDKI** HANYA dari baris nomor tersebut.
+       - Ambil **SIKI** (Manajemen/Tindakan) HANYA dari baris nomor tersebut.
+       - Ambil **SLKI** (Kriteria Hasil) HANYA dari baris nomor tersebut.
+       - **Pemisahan:** Jika SIKI dan SLKI tercampur dalam satu kolom teks, pisahkan dengan cerdas (SIKI biasanya diawali kata kerja "Manajemen", "Pantau", "Berikan"; SLKI biasanya berisi target "Menurun", "Meningkat", "Membaik").
+    
+    LARANGAN:
+    - JANGAN mengambil Diagnosis dari No. 1 tapi Intervensi dari No. 5.
+    - JANGAN menambah intervensi di luar yang tertulis di baris referensi terpilih.
+
+    FORMAT OUTPUT JSON (RFC 8259 Compliant):
+    {
+        "subjective": "Ringkasan keluhan pasien dari input",
+        "objective": "Ringkasan data objektif dari input",
+        "assessment": "Diagnosis SDKI (Salin persis dari kolom SDKI baris terpilih)",
+        "plan": "Rencana tindakan (Salin poin-poin SIKI dari baris terpilih)",
+        "tindakan_lanjutan": "Saran operasional singkat",
+        "keterangan": "Validasi: 'Cocok dengan Penyakit No. [X] karena gejala [Y] sesuai referensi.'",
+        "SDKI": ["List string Diagnosis"],
+        "SIKI": ["List string Intervensi"],
+        "SLKI": ["List string Luaran/Kriteria Hasil"]
+    }
+    """
+
+    user_prompt_content = f"""
+    DATA PASIEN:
+    Nama: {patient.nama}
+    Input Perawat: "{query_text}"
+    
+    REFERENSI (TABEL PDF):
+    {context_text}
+    """
+
     try:
         completion = client.chat.completions.create(
-            model=api_model,
+            model=api_model, 
+            temperature=0.2, # Rendah untuk presisi data tabel
             messages=[
-                {
-                    "role": "system",
-                    "content": "Anda adalah perawat profesional. Susun laporan ASKEB (Asuhan Keperawatan). Output JSON valid: {subjective, objective, plan, tindakan_lanjutan, keterangan, SDKI:[], SIKI:[], SLKI:[]}."
-                },
-                {
-                    "role": "user",
-                    "content": f"Kasus Pasien: {query_text}\nReferensi: {context_text}"
-                }
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt_content}
             ],
         )
 
@@ -129,31 +172,36 @@ def create_laporan():
         ai_json = re.sub(r"^```json\s*|\s*```$", "", ai_json.strip(), flags=re.MULTILINE)
         parsed = json.loads(ai_json)
 
-    except:
+    except Exception as e:
+        print(f"LLM/Parsing Error: {e}")
         parsed = {
             "subjective": query_text,
             "objective": "-",
+            "assessment": "Gagal memproses otomatis",
             "plan": "-",
             "tindakan_lanjutan": "-",
-            "keterangan": "",
-            "SDKI": [],
-            "SIKI": [],
-            "SLKI": []
+            "keterangan": "Error sistem AI",
+            "SDKI": [], "SIKI": [], "SLKI": []
         }
 
+    # ==== 3. SIMPAN KE DATABASE ====
+    assess_str = parsed.get("assessment", "")
+    if not assess_str and parsed.get("SDKI"):
+        assess_str = ", ".join(parsed["SDKI"])
+
     laporan = Laporan(
-        patient=patient,   # ORM auto set patient_id
+        patient=patient,
         user_id=user_id,
         tanggal=datetime.utcnow(),
-        subjective=parsed.get("subjective"),
-        objective=parsed.get("objective"),
-        assessment=f"Diagnosa: {', '.join(parsed.get('SDKI', []))}",
-        plan=parsed.get("plan"),
-        tindakan_lanjutan=parsed.get("tindakan_lanjutan"),
+        subjective=parsed.get("subjective", "-"),
+        objective=parsed.get("objective", "-"),
+        assessment=assess_str,
+        plan=parsed.get("plan", "-"),
+        tindakan_lanjutan=parsed.get("tindakan_lanjutan", "-"),
         keterangan=parsed.get("keterangan", ""),
-        SDKI=json.dumps(parsed.get("SDKI")),
-        SIKI=json.dumps(parsed.get("SIKI")),
-        SLKI=json.dumps(parsed.get("SLKI"))
+        SDKI=json.dumps(parsed.get("SDKI", [])),
+        SIKI=json.dumps(parsed.get("SIKI", [])),
+        SLKI=json.dumps(parsed.get("SLKI", []))
     )
 
     db.session.add(laporan)

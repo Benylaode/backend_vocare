@@ -10,6 +10,7 @@ from sentence_transformers import SentenceTransformer
 from app.utils import role_required
 from flask_jwt_extended import jwt_required
 import pickle
+import re
 
 # Init model
 try:
@@ -53,40 +54,111 @@ def load_mapping(file_path: str):
     return {}
 
 def extract_text_from_pdf(pdf_path: str):
-    """Ekstrak teks dari PDF. Kalau halaman gambar → OCR pakai easyocr."""
-    text = ""
+    """Ekstrak teks dengan menjaga struktur layout."""
+    text_content = []
     try:
         with pymupdf.open(pdf_path) as doc:
             for page_num, page in enumerate(doc, start=1):
-                page_text = page.get_text("text").strip()
-                if page_text:
-                    text += f"\n--- Halaman {page_num} ---\n{page_text}"
-                else:
-                    if reader:
-                        pix = page.get_pixmap()
-                        img = Image.open(io.BytesIO(pix.tobytes("png")))
-                        img_np = np.array(img)
-                        ocr_result = reader.readtext(img_np, detail=0)
-                        ocr_text = "\n".join(ocr_result)
-                        text += f"\n--- Halaman {page_num} (OCR) ---\n{ocr_text}"
-                    else:
-                        text += f"\n--- Halaman {page_num} (OCR tidak tersedia) ---"
+                # Gunakan "blocks" untuk memisahkan header/footer dan paragraf
+                # Blocks return: (x0, y0, x1, y1, "text", block_no, block_type)
+                blocks = page.get_text("blocks")
+                page_text = ""
+                
+                for b in blocks:
+                    if b[6] == 0:  # Tipe 0 adalah teks
+                        cleaned_block = b[4].strip()
+                        if cleaned_block:
+                            page_text += cleaned_block + "\n\n" # Pisah antar blok dengan 2 enter
+                
+                if page_text.strip():
+                    text_content.append(f"--- Halaman {page_num} ---\n{page_text}")
+                
+                # Fallback ke OCR jika halaman kosong (Gambar)
+                elif reader: 
+                    pix = page.get_pixmap()
+                    img = Image.open(io.BytesIO(pix.tobytes("png")))
+                    img_np = np.array(img)
+                    ocr_result = reader.readtext(img_np, detail=0)
+                    ocr_text = "\n".join(ocr_result)
+                    if ocr_text.strip():
+                        text_content.append(f"--- Halaman {page_num} (OCR) ---\n{ocr_text}")
+                        
     except Exception as e:
         print(f"Error extracting text from PDF: {e}")
         return None
-    return text
+        
+    return "\n".join(text_content)
 
-def chunk_text(text, chunk_size=500, overlap=50):
-    """Potong teks panjang jadi chunks kecil dengan overlap."""
+import re  # Pastikan ini ada di paling atas file
+
+def chunk_text(text, chunk_size=1000, overlap=200):
     if not text:
         return []
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = start + chunk_size
-        chunks.append(text[start:end])
-        start += chunk_size - overlap
-    return chunks
+
+    # DEFINISI SEPARATOR DENGAN REGEX
+    # Kita pakai regex pattern untuk kalimat agar mengenali titik (.), tanya (?), seru (!)
+    # Pattern r'(?<=[.?!])\s+' artinya: Potong di spasi (\s+) HANYA jika didahului . ? atau !
+    separators = ["\n\n", "\n", r'(?<=[.?!])\s+', " ", ""]
+    
+    def split_recursive(current_text, current_separators):
+        if len(current_text) <= chunk_size:
+            return [current_text]
+        
+        if not current_separators:
+            # Fallback: potong paksa karakter
+            return [current_text[i:i + chunk_size] for i in range(0, len(current_text), chunk_size - overlap)]
+
+        separator = current_separators[0]
+        next_separators = current_separators[1:]
+        
+        # --- BAGIAN REGEX DIPAKAI DI SINI ---
+        if separator == "":
+            splits = list(current_text)
+        elif separator == r'(?<=[.?!])\s+': 
+            # Gunakan re.split untuk separator kalimat regex
+            splits = re.split(separator, current_text)
+        else:
+            # Gunakan string split biasa untuk \n atau spasi
+            splits = current_text.split(separator)
+        # ------------------------------------
+            
+        merged_splits = []
+        current_chunk = ""
+        
+        for split in splits:
+            # Perbaikan kecil: Jika pakai regex split, separatornya sering hilang/terpisah.
+            # Kita perlu menyambung ulang dengan spasi jika separatornya adalah pola kalimat.
+            spacer = ""
+            if separator == "\n\n": spacer = "\n\n"
+            elif separator == "\n": spacer = "\n"
+            elif separator == " ": spacer = " "
+            # Untuk regex sentence, spasi biasanya ikut terpotong, jadi tidak perlu spacer tambahan
+            # karena logic merge akan menyatukan.
+            
+            segment = split + spacer
+            
+            if len(current_chunk) + len(segment) <= chunk_size:
+                current_chunk += segment
+            else:
+                if current_chunk:
+                    merged_splits.append(current_chunk)
+                current_chunk = segment
+        
+        if current_chunk:
+            merged_splits.append(current_chunk)
+            
+        final_processed = []
+        for chunk in merged_splits:
+            if len(chunk) > chunk_size:
+                final_processed.extend(split_recursive(chunk, next_separators))
+            else:
+                final_processed.append(chunk)
+                
+        return final_processed
+
+    # Bersihkan hasil
+    final_chunks = split_recursive(text, separators)
+    return [c.strip() for c in final_chunks if c.strip()]
 
 def process_pdf_and_save(file, file_type: str, faiss_dir: str):
     """Fungsi utama untuk memproses PDF dan simpan embeddings ke FAISS + mapping pkl."""

@@ -125,81 +125,114 @@ def get_cppt_detail(cppt_id):
 # 3. CREATE (POST) with RAG & AI
 @cppt_bp.route("/", methods=["POST"])
 @jwt_required()
+@document_bp.route('/create-cppt', methods=['POST'])
+@jwt_required()
 def create_cppt():
     user_id = int(get_jwt_identity())
     data = request.get_json()
     
     patient_id = data.get("patient_id")
-    query = data.get("query") # Input narasi perkembangan dari perawat
+    query = data.get("query")
     
     if not patient_id or not query:
         return jsonify({"status": 400, "message": "Patient ID and Query required"}), 400
 
-    # Ambil Data Pasien & Laporan Terakhir
+    # 1. Ambil Data Pasien
     patient = Patient.query.get(patient_id)
     if not patient:
         return jsonify({"status": 404, "message": "Patient not found"}), 404
 
+    # 2. Ambil Konteks Laporan Terakhir
     laporan = Laporan.query.filter_by(patient_id=patient_id).order_by(Laporan.tanggal.desc()).first()
-    
     laporan_context = "Belum ada Askeb sebelumnya."
     if laporan:
-        laporan_context = f"Diagnosa Medis/Keperawatan Sebelumnya: {laporan.SDKI}\nRencana Sebelumnya: {laporan.SIKI}"
+        laporan_context = f"Diagnosa Sebelumnya: {laporan.assessment}\nPlan Sebelumnya: {laporan.plan}"
     
-    # Pencarian RAG (SDKI & SIKI)
-    referensi_standar = search_sdki_siki(query)
+    # 3. Pencarian RAG
+    referensi_text = search_sdki_siki(query) 
     
-    # Prompt AI
-    prompt = f"""
-    Anda adalah Perawat Profesional (Ners).
-    Tugas: Buat CPPT (Catatan Perkembangan Pasien Terintegrasi) format SOAP.
-    
-    PASIEN: {patient.nama}
-    {laporan_context}
-    
-    REFERENSI STANDAR (SDKI/SIKI) DARI SISTEM:
-    {referensi_standar}
-    
-    UPDATE PERAWAT: "{query}"
-    
-    INSTRUKSI:
-    1. **Subjective**: Ringkas keluhan.
-    2. **Objective**: Ringkas observasi.
-    3. **Assessment**: WAJIB gunakan Label DIAGNOSIS SDKI yang relevan dari referensi.
-    4. **Plan**: WAJIB gunakan Label INTERVENSI SIKI yang relevan.
-    
-    Output JSON (No Markdown):
-    {{
-        "subjective": "...", "objective": "...", "assessment": "...", "plan": "...", "keterangan": "..."
-    }}
+    # 4. Prompt Engineering (Strict Row Mapping + Clinical Relevance Filter)
+    system_prompt = """
+    Anda adalah Perawat Senior & Validator Data Klinis.
+    Tugas: Menyusun CPPT (SOAP) dari narasi perawat, HANYA menggunakan data yang relevan secara medis.
+
+    STRUKTUR REFERENSI:
+    [NO] | [SDKI] | [SIKI] | [Data Subjektif] | [Data Objektif]
+
+    TAHAP 1: FILTERISASI DATA (CRITICAL)
+    - Input perawat mungkin bercampur dengan cerita non-medis.
+    - **ATURAN FILTER:** Buang semua kalimat yang tidak berhubungan dengan kondisi fisik/psikologis pasien.
+      - *Contoh Dibuang:* "Pasien sedang menonton TV", "Keluarga datang menjenguk", "Pasien minta ganti channel".
+      - *Contoh Diambil:* "Pasien mengeluh pusing", "Tampak gelisah", "TD 130/80", "Tidak mau makan".
+    - Pisahkan hasil filter menjadi:
+      - **Data S (Subjektif):** Apa yang pasien katakan tentang keluhannya.
+      - **Data O (Objektif):** Apa yang terukur/terlihat (TTV, Ekspresi, Hasil Lab).
+
+    TAHAP 2: PENGUNCIAN BARIS (ROW LOCKING)
+    1. Bandingkan Data S & O yang sudah difilter dengan kolom "Data Subjektif/Objektif" di Tabel Referensi.
+    2. Pilih **SATU NOMOR (NO)** penyakit yang gejalanya paling cocok (Match > 80%).
+    3. Ambil SDKI dan SIKI **HANYA** dari baris Nomor tersebut.
+
+    FORMAT OUTPUT JSON (Strict):
+    {
+        "subjective": "Ringkasan Data S yang sudah dibersihkan (Hanya keluhan klinis)",
+        "objective": "Ringkasan Data O yang sudah dibersihkan (Hanya tanda klinis)",
+        "assessment": "Diagnosis SDKI (Copy persis dari baris terpilih)",
+        "plan": "Intervensi SIKI (Copy persis dari baris terpilih)",
+        "keterangan": "Validasi: 'Memilih No.[X] karena data S:[...] & O:[...] sesuai.'"
+    }
     """
+
+    user_prompt_content = f"""
+    DATA PASIEN: {patient.nama}
+    RIWAYAT: {laporan_context}
     
+    INPUT MENTAH PERAWAT:
+    "{query}"
+
+    TABEL REFERENSI (PDF):
+    {referensi_text}
+    """
+
     try:
         completion = client.chat.completions.create(
             model=api_model,
-            messages=[{"role": "user", "content": prompt}]
+            temperature=0.1, # Sangat rendah untuk meminimalisir 'mengarang'
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt_content}
+            ]
         )
+        
         ai_resp = completion.choices[0].message.content
         ai_clean = re.sub(r"^```json\s*|\s*```$", "", ai_resp.strip(), flags=re.MULTILINE)
         parsed = json.loads(ai_clean)
+        
     except Exception as e:
-        return jsonify({"status": 500, "message": f"AI Error: {str(e)}"}), 500
+        print(f"AI/Parsing Error: {e}")
+        parsed = {
+            "subjective": query, # Fallback ke raw query jika gagal
+            "objective": "-",
+            "assessment": "Gagal Verifikasi AI",
+            "plan": "-",
+            "keterangan": "Error System"
+        }
 
+    # 5. Simpan
     now = datetime.utcnow()
     shift = determine_shift(now)
 
-    # Simpan ke DB dengan ensure_string
     try:
         new_cppt = CPPT(
             patient_id=patient_id, 
             user_id=user_id, 
             tanggal=now, 
             shift=shift,
-            subjective=ensure_string(parsed.get("subjective")),
-            objective=ensure_string(parsed.get("objective")),
-            assessment=ensure_string(parsed.get("assessment")),
-            plan=ensure_string(parsed.get("plan")),
-            keterangan=ensure_string(parsed.get("keterangan")),
+            subjective=parsed.get("subjective", "-"),
+            objective=parsed.get("objective", "-"),
+            assessment=parsed.get("assessment", "-"),
+            plan=parsed.get("plan", "-"),
+            keterangan=parsed.get("keterangan", ""),
             laporan_id=laporan.id if laporan else None 
         )
         
@@ -207,12 +240,18 @@ def create_cppt():
         db.session.commit()
     except Exception as db_err:
         db.session.rollback()
-        return jsonify({"status": 500, "message": f"Database Error: {str(db_err)}"}), 500
+        return jsonify({"status": 500, "message": str(db_err)}), 500
 
     return jsonify({
         "status": 201, 
-        "message": f"CPPT Created (Shift {shift})", 
-        "data": {"id": new_cppt.id}
+        "message": "CPPT Tervalidasi", 
+        "data": {
+            "id": new_cppt.id,
+            "s": new_cppt.subjective,
+            "o": new_cppt.objective,
+            "a": new_cppt.assessment,
+            "p": new_cppt.plan
+        }
     }), 201
 
 
