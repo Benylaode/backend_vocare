@@ -157,95 +157,103 @@ def create_laporan():
     if not patient:
         return jsonify({"status": 404, "message": "Pasien tidak ditemukan"}), 404
 
-    # Validasi Ruangan (Kecuali Admin)
     if user.role.name != 'admin' and user.ruangan and patient.ruangan != user.ruangan:
         return jsonify({"status": 403, "message": f"Anda hanya boleh menangani pasien di ruangan {user.ruangan}"}), 403
 
     # =====================================================
-    # ==== 1. RETRIEVAL (STRICT MODE) =====================
+    # 1. RETRIEVAL (MENGAMBIL DATA BUKU)
     # =====================================================
     BASE_DIR = "app/faisses/siki-slki-sdki"
     
-    # Default values jika tidak ketemu
-    context_text = "Tidak ada referensi ditemukan."
-    matched_symptoms = "Tidak ada gejala yang cocok dalam database."
-    found_match = False
-
+    # Default variable
+    context_text = "" 
+    matched_symptoms = ""
+    is_retrieval_success = False
+    
     try:
         symptom_index, symptom_map, full_index, full_map = load_dual_indexes(BASE_DIR)
 
-        # Cari diagnosa
+        # K=1: Ambil 1 Referensi Diagnosa Terbaik (Paling Relevan)
         res_full, res_symptom = search_dual_index(
             query_text,
             symptom_index,
             symptom_map,
-            full_map
+            full_map,
+            k=1 
         )
 
         if res_full and res_symptom:
             context_text = res_full
             matched_symptoms = res_symptom
-            found_match = True
+            is_retrieval_success = True
+        else:
+            context_text = "TIDAK DITEMUKAN REFERENSI YANG COCOK DALAM DATABASE."
 
     except Exception as e:
         print(f"FAISS Error: {e}")
-        # Lanjut ke LLM dengan context default (kosong)
+        context_text = "Error sistem retrieval database."
 
     # =====================================================
-    # ==== 2. PROMPT STRICT & RELEVANSI ===================
+    # 2. PROMPT "HYBRID MAPPING" (SANGAT RELEVAN)
     # =====================================================
+    # Strategi: 
+    # - Subjective/Objective -> Ambil dari INPUT USER (Kondisi Real).
+    # - Assessment/Plan (SDKI/SIKI/SLKI) -> Ambil dari DATABASE (Standar Buku).
+    # - Jembatan -> AI menjelaskan kenapa Input User cocok dengan Standar Buku.
+
     system_prompt = """
-Anda adalah Sistem Pakar Dokumentasi Keperawatan (CPPT) yang KAKU, DISIPLIN, dan PRESISI.
+Anda adalah Spesialis Dokumentasi Keperawatan (CPPT).
 
-TUGAS UTAMA:
-1. Bandingkan "INPUT PERAWAT" dengan "GEJALA DARI DATABASE" (Matched Symptoms).
-2. Tentukan apakah keduanya RELEVAN secara medis.
-   - JIKA RELEVAN: Anda WAJIB mengambil data SDKI, SIKI, dan SLKI *persis* dari "REFERENSI LENGKAP". Jangan ubah kalimat intervensi/luaran.
-   - JIKA TIDAK RELEVAN (Misal: Input "Sakit Perut" tapi Database "Resiko Jatuh"): Abaikan referensi, buat output kosong/error pada kolom assessment.
+TUGAS ANDA:
+Anda menerima dua sumber data:
+1. "KONDISI PASIEN" (Input Real dari Perawat).
+2. "STANDAR ASUHAN KEPERAWATAN" (Data Buku SDKI/SIKI/SLKI yang telah dipilih sistem).
 
-ATURAN PENGISIAN JSON:
-- "subjective": Ambil ringkasan dari INPUT PERAWAT.
-- "objective": Ambil ringkasan dari INPUT PERAWAT (jika ada data terukur).
-- "assessment": Isi dengan DIAGNOSA KEPERAWATAN (SDKI) dari Referensi JIKA Relevan.
-- "plan": Isi dengan INTERVENSI (SIKI) dari Referensi JIKA Relevan.
-- "SDKI", "SIKI", "SLKI": Array string, salin PERSIS dari tabel referensi.
+INSTRUKSI PENGISIAN JSON (WAJIB):
+1. **Subjective & Objective:** Isi berdasarkan ringkasan "KONDISI PASIEN".
+2. **Assessment (Diagnosa):** SALIN JUDUL DIAGNOSA dari "STANDAR ASUHAN KEPERAWATAN".
+3. **SDKI, SIKI, SLKI (Array):** SALIN PERSIS poin-poin (bullet points) dari "STANDAR ASUHAN KEPERAWATAN" ke dalam array. JANGAN DIUBAH/DIKURANGI.
+4. **Keterangan:** Jelaskan hubungan relevansi. Contoh: "Diagnosa ini dipilih karena keluhan pasien [sebutkan keluhan] sesuai dengan indikator [sebutkan gejala buku]".
 
-FORMAT OUTPUT (JSON ONLY):
+ATURAN KRUSIAL:
+- JIKA "STANDAR ASUHAN KEPERAWATAN" TERSEDIA, ANDA DILARANG MENGOSONGKAN ARRAY SDKI/SIKI/SLKI.
+- PAKSAKAN MAPPING JIKA ADA KEMIRIPAN GEJALA SEDIKITPUN.
+
+FORMAT OUTPUT JSON FINAL:
 {
   "subjective": "...",
   "objective": "...",
   "assessment": "...",
   "plan": "...",
-  "tindakan_lanjutan": "Saran singkat...",
-  "keterangan": "Jelaskan: 'Relevan karena keluhan X cocok dengan gejala database Y' atau 'Tidak Relevan'.",
-  "SDKI": [],
-  "SIKI": [],
-  "SLKI": []
+  "tindakan_lanjutan": "Saran operasional...",
+  "keterangan": "...",
+  "SDKI": ["..."],
+  "SIKI": ["..."],
+  "SLKI": ["..."]
 }
 """
 
     user_prompt_content = f"""
-DATA PASIEN:
-Nama: {patient.nama}
-
-1. INPUT PERAWAT (QUERY):
+--- SUMBER DATA 1: KONDISI PASIEN (INPUT PERAWAT) ---
 "{query_text}"
 
-2. GEJALA DARI DATABASE (MATCHED SYMPTOMS):
-(Ini adalah hasil pencarian sistem yang paling mendekati)
-{matched_symptoms}
+--- SUMBER DATA 2: STANDAR ASUHAN KEPERAWATAN (HASIL RETRIEVAL DB) ---
+(Sistem mendeteksi kemiripan gejala di sini: {matched_symptoms})
 
-3. REFERENSI LENGKAP (JIKA RELEVAN, AMBIL DARI SINI):
+ISI LENGKAP STANDAR (SDKI/SIKI/SLKI):
 {context_text}
+
+--- INSTRUKSI ---
+Buat JSON CPPT sekarang. Pastikan SDKI, SIKI, dan SLKI disalin penuh dari SUMBER DATA 2.
 """
 
     # =====================================================
-    # ==== 3. CALL LLM ====================================
+    # 3. EKSEKUSI LLM
     # =====================================================
     try:
         completion = client.chat.completions.create(
             model=api_model,
-            temperature=0.1, # Sangat rendah agar deterministik/kaku
+            temperature=0.2, # Rendah agar patuh pada teks buku
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt_content}
@@ -253,16 +261,16 @@ Nama: {patient.nama}
         )
 
         ai_json = completion.choices[0].message.content
-        # Bersihkan markdown json jika ada
         ai_json = re.sub(r"^```json\s*|\s*```$", "", ai_json.strip(), flags=re.MULTILINE)
         parsed = json.loads(ai_json)
 
     except Exception as e:
-        print(f"LLM/Parsing Error: {e}")
+        print(f"LLM Processing Error: {e}")
+        # Fallback agar user tetap dapat feedback meski AI gagal
         parsed = {
             "subjective": query_text,
             "objective": "-",
-            "assessment": "Gagal memproses otomatis",
+            "assessment": "Gagal memproses AI",
             "plan": "-",
             "tindakan_lanjutan": "-",
             "keterangan": f"Error: {str(e)}",
@@ -272,12 +280,12 @@ Nama: {patient.nama}
         }
 
     # =====================================================
-    # ==== 4. SIMPAN DATABASE =============================
+    # 4. SIMPAN KE DATABASE
     # =====================================================
+    # Validasi Assessment String
     assess_str = parsed.get("assessment", "")
-    # Fallback jika assessment kosong tapi ada array SDKI
     if (not assess_str or assess_str == "-") and parsed.get("SDKI"):
-        assess_str = ", ".join(parsed["SDKI"])
+        assess_str = parsed["SDKI"][0] if len(parsed["SDKI"]) > 0 else "Diagnosa Teridentifikasi"
 
     laporan = Laporan(
         patient=patient,
@@ -302,7 +310,6 @@ Nama: {patient.nama}
         "message": "Laporan (Askeb) berhasil dibuat",
         "data": laporan_to_dict(laporan)
     }), 201
-
 
 # ================== GET BY ID ==================
 @laporan_bp.route("/<int:id>", methods=["GET"])
