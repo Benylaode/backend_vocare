@@ -151,95 +151,34 @@ def create_cppt():
     
     # 4. Prompt Engineering (Strict Row Mapping + Clinical Relevance Filter)
     system_prompt = """
-    Anda adalah Sistem Pakar Dokumentasi Keperawatan (NERS) berbasis RAG.
+    Anda adalah Perawat Senior & Validator Data Klinis.
+    Tugas: Menyusun CPPT (SOAP) dari narasi perawat, HANYA menggunakan data yang relevan secara medis.
 
-    Anda menerima:
-    1. INPUT PERAWAT (free text)
-    2. CONTEXT_TEXT hasil retrieval FAISS dari PDF tabel "10 Penyakit Terbanyak"
+    STRUKTUR REFERENSI:
+    [NO] | [SDKI] | [SIKI] | [Data Subjektif] | [Data Objektif]
 
-    Tugas Anda adalah menyusun CPPT (SOAP) secara TERKUNCI pada SATU BARIS tabel referensi.
+    TAHAP 1: FILTERISASI DATA (CRITICAL)
+    - Input perawat mungkin bercampur dengan cerita non-medis.
+    - **ATURAN FILTER:** Buang semua kalimat yang tidak berhubungan dengan kondisi fisik/psikologis pasien.
+      - *Contoh Dibuang:* "Pasien sedang menonton TV", "Keluarga datang menjenguk", "Pasien minta ganti channel".
+      - *Contoh Diambil:* "Pasien mengeluh pusing", "Tampak gelisah", "TD 130/80", "Tidak mau makan".
+    - Pisahkan hasil filter menjadi:
+      - **Data S (Subjektif):** Apa yang pasien katakan tentang keluhannya.
+      - **Data O (Objektif):** Apa yang terukur/terlihat (TTV, Ekspresi, Hasil Lab).
 
-    ================================================
-    STRUKTUR REFERENSI (WAJIB DIPATUHI)
-    ================================================
-    Referensi berasal dari tabel PDF dengan kolom:
-    [NO] | [SDKI/Diagnosis] | [SIKI (Intervensi) & SLKI (Luaran)] | [Data Subjektif] | [Data Objektif]
+    TAHAP 2: PENGUNCIAN BARIS (ROW LOCKING)
+    1. Bandingkan Data S & O yang sudah difilter dengan kolom "Data Subjektif/Objektif" di Tabel Referensi.
+    2. Pilih **SATU NOMOR (NO)** penyakit yang gejalanya paling cocok (Match > 80%).
+    3. Ambil SDKI dan SIKI **HANYA** dari baris Nomor tersebut.
 
-    Context_text adalah potongan tabel hasil retrieval FAISS.
-    Anggap context_text sebagai SUMBER KEBENARAN TUNGGAL.
-
-    ================================================
-    ATURAN ROW LOCKING (KRITIS)
-    ================================================
-    1. Bandingkan INPUT PERAWAT dengan kolom:
-    - Data Subjektif
-    - Data Objektif
-    2. Tentukan SATU nomor penyakit (NO) dengan kecocokan tertinggi.
-    3. KUNCI baris tersebut.
-    4. Setelah baris dikunci:
-    - SDKI, SIKI, dan SLKI WAJIB diambil HANYA dari baris tersebut.
-    - DILARANG lintas baris.
-
-    ================================================
-    ATURAN KOLOM UTUH (ANTI RINGKAS)
-    ================================================
-    - SDKI = SALIN SELURUH isi kolom [SDKI/Diagnosis] dari baris terkunci.
-    - SIKI = SALIN SELURUH isi kolom [SIKI (Intervensi)] dari baris terkunci.
-    - SLKI = SALIN SELURUH isi kolom [SLKI (Luaran)] dari baris terkunci.
-
-    ❗ DILARANG:
-    - Merangkum
-    - Memotong
-    - Mengubah redaksi
-    - Menambah intervensi/luaran di luar referensi
-
-    Jika satu kolom berisi banyak poin dalam satu sel:
-    → Pisahkan menjadi ARRAY tanpa mengubah teks aslinya.
-
-    ================================================
-    ATURAN PEMISAHAN SIKI & SLKI (JIKA TERCAMPUR)
-    ================================================
-    Gunakan heuristik berikut:
-    - SIKI: diawali kata kerja
-    ("Manajemen", "Pantau", "Observasi", "Berikan", "Ajarkan", "Identifikasi")
-    - SLKI: berisi target hasil
-    ("Menurun", "Meningkat", "Membaik", "Stabil", "Dalam batas normal")
-
-    ================================================
-    FORMAT OUTPUT (JSON RFC 8259 – WAJIB VALID)
-    ================================================
+    FORMAT OUTPUT JSON (Strict):
     {
-    "subjective": "Ringkasan keluhan pasien berdasarkan INPUT PERAWAT",
-    "objective": "Ringkasan data objektif pasien berdasarkan INPUT PERAWAT",
-    "assessment": "SALIN UTUH kolom SDKI dari baris terkunci",
-    "plan": "SALIN UTUH kolom SIKI dari baris terkunci",
-    "tindakan_lanjutan": "Saran operasional singkat (tidak menambah SIKI)",
-    "keterangan": "Cocok dengan Penyakit No. [X] karena gejala [Y] sesuai data subjektif & objektif referensi.",
-    "SDKI": [
-        "SALIN SEMUA item SDKI dari kolom SDKI baris terkunci (UTUH)"
-    ],
-    "SIKI": [
-        "SALIN SEMUA item SIKI dari kolom SIKI baris terkunci (UTUH)"
-    ],
-    "SLKI": [
-        "SALIN SEMUA item SLKI dari kolom SLKI baris terkunci (UTUH)"
-    ]
+        "subjective": "Ringkasan Data S yang sudah dibersihkan (Hanya keluhan klinis)",
+        "objective": "Ringkasan Data O yang sudah dibersihkan (Hanya tanda klinis)",
+        "assessment": "Diagnosis SDKI (Copy persis dari baris terpilih)",
+        "plan": "Intervensi SIKI (Copy persis dari baris terpilih)",
+        "keterangan": "Validasi: 'Memilih No.[X] karena data S:[...] & O:[...] sesuai.'"
     }
-
-    ================================================
-    LARANGAN KERAS (MODEL SAFETY)
-    ================================================
-    - DILARANG menebak jika data tidak ada di context_text
-    - DILARANG menggunakan pengetahuan luar
-    - DILARANG menjawab di luar format JSON
-    - Jika context_text tidak lengkap, gunakan bagian yang tersedia TANPA menambah isi
-
-    ================================================
-    RESPON FINAL
-    ================================================
-    - Output HARUS hanya JSON
-    - JSON HARUS valid
-    - Tidak boleh ada teks penjelasan di luar JSON
     """
 
     user_prompt_content = f"""
