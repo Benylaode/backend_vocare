@@ -141,6 +141,7 @@ def get_laporans():
 
 # ================== CREATE ==================
 @laporan_bp.route("/", methods=["POST"])
+@jwt_required()
 def create_laporan():
     user_id = int(get_jwt_identity())
     user = User.query.get(user_id)
