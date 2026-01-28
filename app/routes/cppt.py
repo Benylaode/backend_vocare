@@ -125,8 +125,6 @@ def get_cppt_detail(cppt_id):
 # 3. CREATE (POST) with RAG & AI
 @cppt_bp.route("/", methods=["POST"])
 @jwt_required()
-@document_bp.route('/create-cppt', methods=['POST'])
-@jwt_required()
 def create_cppt():
     user_id = int(get_jwt_identity())
     data = request.get_json()
