@@ -111,34 +111,45 @@ def split_by_no(text):
 
 
 def build_indexes_from_rows(rows):
-    """
-    Return:
-    symptom_rows → untuk Index A
-    full_rows → untuk Index B
-    """
     symptom_rows = []
     full_rows = []
 
     for r in rows:
         text = r["text"]
 
-        # Ambil bagian subjektif & objektif saja
-        subj = re.search(r"Data Subjektif\s*:([\s\S]*?)Data Objektif", text)
-        obj = re.search(r"Data Objektif\s*:([\s\S]*?)(\n[A-Z]|$)", text)
+        # PERBAIKAN: Gunakan re.IGNORECASE dan pola yang lebih fleksibel
+        # Menangkap apa saja setelah kata kunci sampai ketemu kata kunci berikutnya atau akhir baris
+        
+        # 1. Ambil Data Subjektif
+        subj_match = re.search(
+            r"(?:DATA SUBJEKTIF|Data Subjektif)\s*[:\n]\s*([\s\S]*?)(?=(?:DATA OBJEKTIF|Data Objektif)|$)", 
+            text, 
+            re.IGNORECASE
+        )
+        
+        # 2. Ambil Data Objektif
+        obj_match = re.search(
+            r"(?:DATA OBJEKTIF|Data Objektif)\s*[:\n]\s*([\s\S]*?)(?=\n\d+\s+[A-Z]|$)", 
+            text, 
+            re.IGNORECASE
+        )
 
-        subj_text = subj.group(1).strip() if subj else ""
-        obj_text = obj.group(1).strip() if obj else ""
+        subj_text = subj_match.group(1).strip() if subj_match else "-"
+        obj_text = obj_match.group(1).strip() if obj_match else "-"
+
+        # Buat teks khusus untuk Index Pencarian (Symptom Index)
+        # Kita gabungkan agar FAISS fokus mencocokkan keluhan user ke sini
+        symptom_text = f"KELUHAN PASIEN (Subjektif): {subj_text}\nTEMUAN KLINIS (Objektif): {obj_text}"
 
         symptom_rows.append({
             "no": r["no"],
-            "text": f"NO {r['no']}\nSUBJEKTIF:\n{subj_text}\n\nOBJEKTIF:\n{obj_text}"
+            "text": symptom_text  # Ini yang akan di-embedding untuk pencarian
         })
 
-        # Full row tetap utuh
+        # Full row tetap utuh untuk context generation nanti
         full_rows.append(r)
 
     return symptom_rows, full_rows
-
 def build_faiss_from_rows(rows, faiss_path, pkl_path):
     index = faiss.IndexIDMap(faiss.IndexFlatL2(EMBEDDING_DIM))
     mapping = {}
