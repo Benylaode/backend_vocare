@@ -24,27 +24,76 @@ model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 FAISS_INDEX_FILE = "app/faisses/siki-slki-sdki/siki-slki-sdki.faiss"
 MAPPING_FILE = "app/faisses/siki-slki-sdki/siki-slki-sdki.pkl"
 
-def search_by_row(query, index, mapping, k=1):
+def retrieve_full_context(query, base_dir):
+    # Load symptom index
+    s_index = faiss.read_index(os.path.join(base_dir, "symptom.faiss"))
+    with open(os.path.join(base_dir, "symptom.pkl"), "rb") as f:
+        s_map = pickle.load(f)
+
+    # Search NO terbaik
     q_emb = model.encode([query]).astype("float32")
-    _, I = index.search(q_emb, k)
+    _, I = s_index.search(q_emb, 1)
+
+    best_id = int(I[0][0])
+    best_no = s_map[best_id]["no"]
+
+    # Load full index
+    with open(os.path.join(base_dir, "full.pkl"), "rb") as f:
+        f_map = pickle.load(f)
+
+    # Ambil full row
+    for v in f_map.values():
+        if v["no"] == best_no:
+            return v["text"]
+
+    return "Tidak ada referensi ditemukan."
+
+
+def load_dual_indexes(base_dir):
+    """
+    Load symptom + full FAISS index dan mapping
+    """
+    symptom_faiss = os.path.join(base_dir, "symptom.faiss")
+    symptom_pkl = os.path.join(base_dir, "symptom.pkl")
+    full_faiss = os.path.join(base_dir, "full.faiss")
+    full_pkl = os.path.join(base_dir, "full.pkl")
+
+    if not all(map(os.path.exists, [symptom_faiss, symptom_pkl, full_faiss, full_pkl])):
+        raise FileNotFoundError("Dual index belum tersedia. Upload PDF SDKI-SIKI-SLKI dulu.")
+
+    symptom_index = faiss.read_index(symptom_faiss)
+    full_index = faiss.read_index(full_faiss)
+
+    with open(symptom_pkl, "rb") as f:
+        symptom_map = pickle.load(f)
+
+    with open(full_pkl, "rb") as f:
+        full_map = pickle.load(f)
+
+    return symptom_index, symptom_map, full_index, full_map
+def search_dual_index(query, symptom_index, symptom_map, full_map, k=1):
+    """
+    Step 1: Cari NO terbaik dari symptom index
+    Step 2: Ambil full SDKI-SIKI-SLKI dari full_map
+    """
+    q_emb = model.encode([query]).astype("float32")
+    _, I = symptom_index.search(q_emb, k)
 
     if len(I[0]) == 0:
         return ""
 
     best_id = int(I[0][0])
-    best_no = mapping[best_id]["no"]
+    best_no = symptom_map[best_id]["no"]
 
-    results = []
-    for v in mapping.values():
+    for v in full_map.values():
         if v["no"] == best_no:
-            results.append(v["text"])
+            return v["text"]
 
-    return "\n\n".join(results)
+    return ""
 
 
 laporan_bp = Blueprint("laporan_bp", __name__, url_prefix="/laporan")
 
-# ================== HELPERS ==================
 def safe_json(val):
     try:
         return json.loads(val) if val else []
@@ -107,96 +156,89 @@ def create_laporan():
     if user.role.name != 'admin' and user.ruangan and patient.ruangan != user.ruangan:
         return jsonify({"status": 403, "message": f"Anda hanya boleh menangani pasien di ruangan {user.ruangan}"}), 403
 
-    # ==== 1. RETRIEVAL (RAG) ====
-    matches = []
-    if os.path.exists(FAISS_INDEX_FILE) and os.path.exists(MAPPING_FILE):
-        try:
-            with open(MAPPING_FILE, "rb") as f:
-                id_to_text = pickle.load(f)
-            index = faiss.read_index(FAISS_INDEX_FILE)
-            # Ambil 3 chunk teratas untuk mendapatkan konteks baris tabel yang utuh
-            matches = search_by_row(query_text, index, id_to_text)
-        except Exception as e:
-            print(f"FAISS Error: {e}")
-            pass
-
-    context_text = "\n\n".join(matches) if matches else "Tidak ada referensi ditemukan."
-
-    # ==== 2. PROMPT STRICT ROW MAPPING (KHUSUS FORMAT PDF 10 PENYAKIT) ====
-    
-    system_prompt = """
-    Anda adalah Sistem Pakar Dokumentasi Keperawatan (Ners).
-
-    Tugas Anda adalah menyusun CPPT (Format SOAP) berdasarkan "Tabel 10 Penyakit Terbanyak".
-
-    STRUKTUR DATA REFERENSI (WAJIB DIPAHAMI):
-    Referensi berbentuk tabel dengan kolom:
-    [NO] | [SDKI/Diagnosis] | [SIKI (Intervensi) & SLKI (Luaran)] | [Data Subjektif] | [Data Objektif]
-
-    ATURAN ROW LOCKING (WAJIB PATUH):
-    1. Cocokkan input perawat dengan kolom "Data Subjektif" dan "Data Objektif" di tabel referensi.
-    2. Tentukan satu Nomor (NO) penyakit yang paling cocok.
-    3. Kunci baris tersebut.
-    4. Semua data berikut HARUS diambil HANYA dari baris yang terkunci:
-    - SDKI
-    - SIKI
-    - SLKI
-    5. DILARANG mengambil SDKI dari satu baris dan SIKI/SLKI dari baris lain.
-
-    ATURAN KOLOM UTUH (WAJIB):
-    - SDKI harus berisi SELURUH isi kolom [SDKI/Diagnosis] dari baris terkunci, tanpa diringkas, tanpa dipotong, tanpa diubah.
-    - SIKI harus berisi SELURUH isi kolom [SIKI (Intervensi)] dari baris terkunci, walaupun panjang dan terdiri dari banyak poin.
-    - SLKI harus berisi SELURUH isi kolom [SLKI (Luaran)] dari baris terkunci, tanpa menghilangkan kriteria hasil.
-    - Jika dalam satu kolom terdapat banyak poin dalam satu sel, pecah menjadi array/list TANPA mengubah teks aslinya.
-
-    ATURAN PEMISAHAN SIKI & SLKI:
-    Jika kolom "SIKI & SLKI" tercampur:
-    - SIKI biasanya diawali kata kerja: "Manajemen", "Pantau", "Berikan", "Ajarkan", "Observasi", "Identifikasi"
-    - SLKI biasanya berisi target/hasil: "Menurun", "Meningkat", "Membaik", "Stabil", "Dalam batas normal"
-
-    FORMAT OUTPUT (JSON RFC 8259 — WAJIB VALID):
-    {
-    "subjective": "Ringkasan keluhan pasien dari input perawat",
-    "objective": "Ringkasan data objektif pasien dari input perawat",
-    "assessment": "SALIN UTUH isi kolom SDKI dari baris terkunci",
-    "plan": "SALIN UTUH isi kolom SIKI dari baris terkunci",
-    "tindakan_lanjutan": "Saran operasional singkat berbasis kondisi pasien",
-    "keterangan": "Validasi: 'Cocok dengan Penyakit No. [X] karena gejala [Y] sesuai referensi.'",
-    "SDKI": [
-        "SALIN semua item dari kolom SDKI baris terkunci, tanpa dipotong"
-    ],
-    "SIKI": [
-        "SALIN semua item dari kolom SIKI baris terkunci, tanpa dipotong"
-    ],
-    "SLKI": [
-        "SALIN semua item dari kolom SLKI baris terkunci, tanpa dipotong"
-    ]
-    }
-
-    LARANGAN KERAS:
-    - DILARANG menambah diagnosis, intervensi, atau luaran di luar tabel referensi.
-    - DILARANG menyederhanakan, meringkas, atau memparafrase isi kolom SDKI, SIKI, dan SLKI.
-    - Jika tidak ada kecocokan yang jelas, pilih baris dengan kecocokan tertinggi dan jelaskan alasannya di kolom "keterangan".
-
-    RESPON HARUS:
-    - Hanya dalam format JSON
-    - Valid secara struktur
-    - Tidak boleh ada teks di luar JSON
-    """
-
-    user_prompt_content = f"""
-    DATA PASIEN:
-    Nama: {patient.nama}
-    Input Perawat: "{query_text}"
-    
-    REFERENSI (TABEL PDF):
-    {context_text}
-    """
+    # =====================================================
+    # ==== 1. RETRIEVAL (DUAL INDEX RAG — FINAL) =========
+    # =====================================================
+    BASE_DIR = "app/faisses/siki-slki-sdki"
 
     try:
+        symptom_index, symptom_map, full_index, full_map = load_dual_indexes(BASE_DIR)
+
+        context_text = search_dual_index(
+            query_text,
+            symptom_index,
+            symptom_map,
+            full_map
+        )
+
+        if not context_text:
+            context_text = "Tidak ada referensi ditemukan."
+
+    except Exception as e:
+        print(f"FAISS Error: {e}")
+        context_text = "Tidak ada referensi ditemukan."
+
+    # =====================================================
+    # ==== 2. PROMPT ======================================
+    # =====================================================
+    system_prompt = """
+Anda adalah Sistem Pakar Dokumentasi Keperawatan (Ners).
+
+Tugas Anda adalah menyusun CPPT (Format SOAP) berdasarkan "Tabel 10 Penyakit Terbanyak".
+
+STRUKTUR DATA REFERENSI:
+[NO] | [SDKI/Diagnosis] | [SIKI (Intervensi) & SLKI (Luaran)] | [Data Subjektif] | [Data Objektif]
+
+ATURAN ROW LOCKING (WAJIB):
+1. Cocokkan input perawat dengan kolom "Data Subjektif" dan "Data Objektif".
+2. Tentukan satu Nomor (NO) penyakit yang paling cocok.
+3. Kunci baris tersebut.
+4. Semua data HARUS diambil HANYA dari baris terkunci:
+   - SDKI
+   - SIKI
+   - SLKI
+
+ATURAN KOLOM UTUH:
+- SDKI: salin seluruh isi kolom SDKI dari baris terkunci.
+- SIKI: salin seluruh isi kolom SIKI dari baris terkunci.
+- SLKI: salin seluruh isi kolom SLKI dari baris terkunci.
+- Jika satu kolom berisi banyak poin, pecah jadi array TANPA mengubah teks.
+
+FORMAT OUTPUT (JSON RFC 8259):
+{
+  "subjective": "Ringkasan keluhan pasien",
+  "objective": "Ringkasan data objektif",
+  "assessment": "SALIN UTUH SDKI",
+  "plan": "SALIN UTUH SIKI",
+  "tindakan_lanjutan": "Saran singkat",
+  "keterangan": "Cocok dengan Penyakit No. [X] karena gejala [Y]",
+  "SDKI": [],
+  "SIKI": [],
+  "SLKI": []
+}
+
+LARANGAN:
+- Jangan menambah atau mengubah isi SDKI, SIKI, SLKI
+- Jangan ambil dari baris lain
+- Output HARUS JSON saja
+"""
+
+    user_prompt_content = f"""
+DATA PASIEN:
+Nama: {patient.nama}
+Input Perawat: "{query_text}"
+
+REFERENSI (TABEL PDF):
+{context_text}
+"""
+
+    # =====================================================
+    # ==== 3. CALL LLM ===================================
+    # =====================================================
+    try:
         completion = client.chat.completions.create(
-            model=api_model, 
-            temperature=0.2, # Rendah untuk presisi data tabel
+            model=api_model,
+            temperature=0.2,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt_content}
@@ -216,10 +258,14 @@ def create_laporan():
             "plan": "-",
             "tindakan_lanjutan": "-",
             "keterangan": "Error sistem AI",
-            "SDKI": [], "SIKI": [], "SLKI": []
+            "SDKI": [],
+            "SIKI": [],
+            "SLKI": []
         }
 
-    # ==== 3. SIMPAN KE DATABASE ====
+    # =====================================================
+    # ==== 4. SIMPAN DATABASE =============================
+    # =====================================================
     assess_str = parsed.get("assessment", "")
     if not assess_str and parsed.get("SDKI"):
         assess_str = ", ".join(parsed["SDKI"])
@@ -247,6 +293,7 @@ def create_laporan():
         "message": "Laporan (Askeb) berhasil dibuat",
         "data": laporan_to_dict(laporan)
     }), 201
+
 
 # ================== GET BY ID ==================
 @laporan_bp.route("/<int:id>", methods=["GET"])

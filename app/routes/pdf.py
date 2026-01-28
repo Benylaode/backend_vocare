@@ -91,6 +91,73 @@ def extract_text_from_pdf(pdf_path: str):
 
 import re  # Pastikan ini ada di paling atas file
 
+def split_by_no(text):
+    """
+    Memecah dokumen berdasarkan nomor diagnosis (NO 1, NO 2, dst)
+    Return: list of dict {no, content}
+    """
+    pattern = r"\n\s*(\d+)\s+(?=[A-Z])"
+    parts = re.split(pattern, text)
+
+    rows = []
+    for i in range(1, len(parts), 2):
+        no = parts[i]
+        content = parts[i + 1].strip()
+        rows.append({
+            "no": no,
+            "text": f"NO {no}\n{content}"
+        })
+    return rows
+
+
+def build_indexes_from_rows(rows):
+    """
+    Return:
+    symptom_rows → untuk Index A
+    full_rows → untuk Index B
+    """
+    symptom_rows = []
+    full_rows = []
+
+    for r in rows:
+        text = r["text"]
+
+        # Ambil bagian subjektif & objektif saja
+        subj = re.search(r"Data Subjektif\s*:([\s\S]*?)Data Objektif", text)
+        obj = re.search(r"Data Objektif\s*:([\s\S]*?)(\n[A-Z]|$)", text)
+
+        subj_text = subj.group(1).strip() if subj else ""
+        obj_text = obj.group(1).strip() if obj else ""
+
+        symptom_rows.append({
+            "no": r["no"],
+            "text": f"NO {r['no']}\nSUBJEKTIF:\n{subj_text}\n\nOBJEKTIF:\n{obj_text}"
+        })
+
+        # Full row tetap utuh
+        full_rows.append(r)
+
+    return symptom_rows, full_rows
+
+def build_faiss_from_rows(rows, faiss_path, pkl_path):
+    index = faiss.IndexIDMap(faiss.IndexFlatL2(EMBEDDING_DIM))
+    mapping = {}
+
+    for i, row in enumerate(rows):
+        emb = model.encode([row["text"]]).astype("float32")
+        index.add_with_ids(emb, np.array([i]))
+
+        mapping[i] = {
+            "no": row["no"],
+            "text": row["text"]
+        }
+
+    faiss.write_index(index, faiss_path)
+    with open(pkl_path, "wb") as f:
+        pickle.dump(mapping, f)
+
+
+
 def row_chunk_text(text):
     """
     Memecah dokumen berdasarkan BARIS TABEL (NO 1, NO 2, dst)
@@ -111,69 +178,64 @@ def row_chunk_text(text):
 
 
 def process_pdf_and_save(file, file_type: str, faiss_dir: str):
-    """Fungsi utama untuk memproses PDF dan simpan embeddings ke FAISS + mapping pkl."""
+    """
+    Dual Index Builder:
+    - Index A: symptom.faiss → Data Subjektif + Objektif (untuk retrieval relevansi)
+    - Index B: full.faiss → Full SDKI + SIKI + SLKI per NO (untuk jawaban utuh)
+    """
     if not model or not reader:
         return {'error': 'Model tidak diinisialisasi'}, 500
 
     os.makedirs(faiss_dir, exist_ok=True)
     temp_filepath = os.path.join(faiss_dir, file.filename)
-    faiss_file_path = os.path.join(faiss_dir, f"{file_type}.faiss")
-    pkl_file_path = os.path.join(faiss_dir, f"{file_type}.pkl")
 
     try:
-        # Simpan file sementara
         file.save(temp_filepath)
 
-        # Ekstraksi teks
         extracted_text = extract_text_from_pdf(temp_filepath)
         if not extracted_text:
             return {'error': 'Gagal mengekstrak teks dari PDF'}, 500
 
-        # Chunking
-        chunks = row_chunk_text(extracted_text)
-        if not chunks:
-            return {'message': 'Tidak ada teks yang dapat diproses dalam PDF.'}, 200
+        rows = split_by_no(extracted_text)
+        if not rows:
+            return {'message': 'Tidak ditemukan baris diagnosa (NO) dalam PDF.'}, 200
+        symptom_rows, full_rows = build_indexes_from_rows(rows)
 
-        # Kalau sudah ada file lama → hapus
-        if os.path.exists(faiss_file_path):
-            os.remove(faiss_file_path)
-        if os.path.exists(pkl_file_path):
-            os.remove(pkl_file_path)
+        # Hapus index lama kalau ada
+        for f in ["symptom.faiss", "symptom.pkl", "full.faiss", "full.pkl"]:
+            path = os.path.join(faiss_dir, f)
+            if os.path.exists(path):
+                os.remove(path)
 
-        # Buat index baru
-        index = faiss.IndexIDMap(faiss.IndexFlatL2(EMBEDDING_DIM))
-        mapping = {}
+        # =====================
+        # 5. SIMPAN FAISS
+        # =====================
+        build_faiss_from_rows(
+            symptom_rows,
+            os.path.join(faiss_dir, "symptom.faiss"),
+            os.path.join(faiss_dir, "symptom.pkl")
+        )
 
-        # Proses embeddings per batch
-        batch_size = 100
-        total_chunks = len(chunks)
-        for i in range(0, total_chunks, batch_size):
-            batch_chunks = chunks[i:i + batch_size]
-            embeddings = model.encode(batch_chunks)
-            ids = np.arange(i, i + len(batch_chunks))
-            index.add_with_ids(np.array(embeddings).astype('float32'), ids)
-            for j, chunk in zip(ids, batch_chunks):
-                mapping[int(j)] = {
-                "no": re.search(r"NO (\d+)", chunk).group(1),
-                "text": chunk
-            }
-
-        # Simpan FAISS index + mapping
-        save_faiss_index(index, faiss_file_path)
-        save_mapping(mapping, pkl_file_path)
+        build_faiss_from_rows(
+            full_rows,
+            os.path.join(faiss_dir, "full.faiss"),
+            os.path.join(faiss_dir, "full.pkl")
+        )
 
         return {
-            'message': f'PDF diproses ulang dan {len(chunks)} embeddings disimpan sebagai {file_type}.',
-            'faiss_file': faiss_file_path,
-            'pkl_file': pkl_file_path,
-            'total_chunks': len(chunks)
+            "message": "PDF berhasil diproses dengan Dual Index (Gejala + Full SDKI-SIKI-SLKI)",
+            "total_rows": len(rows),
+            "symptom_index": "symptom.faiss",
+            "full_index": "full.faiss"
         }, 200
 
     except Exception as e:
         return {'error': str(e)}, 500
+
     finally:
         if os.path.exists(temp_filepath):
             os.remove(temp_filepath)
+
 
 
 # === ROUTES ===
