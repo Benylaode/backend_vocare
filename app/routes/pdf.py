@@ -91,74 +91,24 @@ def extract_text_from_pdf(pdf_path: str):
 
 import re  # Pastikan ini ada di paling atas file
 
-def chunk_text(text, chunk_size=1000, overlap=200):
-    if not text:
-        return []
-
-    # DEFINISI SEPARATOR DENGAN REGEX
-    # Kita pakai regex pattern untuk kalimat agar mengenali titik (.), tanya (?), seru (!)
-    # Pattern r'(?<=[.?!])\s+' artinya: Potong di spasi (\s+) HANYA jika didahului . ? atau !
-    separators = ["\n\n", "\n", r'(?<=[.?!])\s+', " ", ""]
+def row_chunk_text(text):
+    """
+    Memecah dokumen berdasarkan BARIS TABEL (NO 1, NO 2, dst)
+    sehingga 1 embedding = 1 diagnosis SDKI lengkap
+    """
+    pattern = r"\n\s*(\d+)\s+(?=[A-Z])"
     
-    def split_recursive(current_text, current_separators):
-        if len(current_text) <= chunk_size:
-            return [current_text]
-        
-        if not current_separators:
-            # Fallback: potong paksa karakter
-            return [current_text[i:i + chunk_size] for i in range(0, len(current_text), chunk_size - overlap)]
+    splits = re.split(pattern, text)
+    
+    chunks = []
+    for i in range(1, len(splits), 2):
+        no = splits[i]
+        content = splits[i + 1]
+        chunk = f"NO {no}\n{content.strip()}"
+        chunks.append(chunk)
 
-        separator = current_separators[0]
-        next_separators = current_separators[1:]
-        
-        # --- BAGIAN REGEX DIPAKAI DI SINI ---
-        if separator == "":
-            splits = list(current_text)
-        elif separator == r'(?<=[.?!])\s+': 
-            # Gunakan re.split untuk separator kalimat regex
-            splits = re.split(separator, current_text)
-        else:
-            # Gunakan string split biasa untuk \n atau spasi
-            splits = current_text.split(separator)
-        # ------------------------------------
-            
-        merged_splits = []
-        current_chunk = ""
-        
-        for split in splits:
-            # Perbaikan kecil: Jika pakai regex split, separatornya sering hilang/terpisah.
-            # Kita perlu menyambung ulang dengan spasi jika separatornya adalah pola kalimat.
-            spacer = ""
-            if separator == "\n\n": spacer = "\n\n"
-            elif separator == "\n": spacer = "\n"
-            elif separator == " ": spacer = " "
-            # Untuk regex sentence, spasi biasanya ikut terpotong, jadi tidak perlu spacer tambahan
-            # karena logic merge akan menyatukan.
-            
-            segment = split + spacer
-            
-            if len(current_chunk) + len(segment) <= chunk_size:
-                current_chunk += segment
-            else:
-                if current_chunk:
-                    merged_splits.append(current_chunk)
-                current_chunk = segment
-        
-        if current_chunk:
-            merged_splits.append(current_chunk)
-            
-        final_processed = []
-        for chunk in merged_splits:
-            if len(chunk) > chunk_size:
-                final_processed.extend(split_recursive(chunk, next_separators))
-            else:
-                final_processed.append(chunk)
-                
-        return final_processed
+    return chunks
 
-    # Bersihkan hasil
-    final_chunks = split_recursive(text, separators)
-    return [c.strip() for c in final_chunks if c.strip()]
 
 def process_pdf_and_save(file, file_type: str, faiss_dir: str):
     """Fungsi utama untuk memproses PDF dan simpan embeddings ke FAISS + mapping pkl."""
@@ -180,7 +130,7 @@ def process_pdf_and_save(file, file_type: str, faiss_dir: str):
             return {'error': 'Gagal mengekstrak teks dari PDF'}, 500
 
         # Chunking
-        chunks = chunk_text(extracted_text)
+        chunks = row_chunk_text(extracted_text)
         if not chunks:
             return {'message': 'Tidak ada teks yang dapat diproses dalam PDF.'}, 200
 
@@ -203,7 +153,10 @@ def process_pdf_and_save(file, file_type: str, faiss_dir: str):
             ids = np.arange(i, i + len(batch_chunks))
             index.add_with_ids(np.array(embeddings).astype('float32'), ids)
             for j, chunk in zip(ids, batch_chunks):
-                mapping[int(j)] = chunk
+                mapping[int(j)] = {
+                "no": re.search(r"NO (\d+)", chunk).group(1),
+                "text": chunk
+            }
 
         # Simpan FAISS index + mapping
         save_faiss_index(index, faiss_file_path)

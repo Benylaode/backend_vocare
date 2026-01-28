@@ -24,14 +24,23 @@ model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 FAISS_INDEX_FILE = "app/faisses/siki-slki-sdki/siki-slki-sdki.faiss"
 MAPPING_FILE = "app/faisses/siki-slki-sdki/siki-slki-sdki.pkl"
 
-def search_with_faiss(query, index, id_to_text, k=3):
-    """Search di FAISS dan balikan teks mapping."""
-    if index is None or not id_to_text:
-        return []
-    q_emb = model.encode([query])
-    q_emb = np.array(q_emb).astype("float32")
-    D, I = index.search(q_emb, k)
-    return [id_to_text[i] for i in I[0] if i != -1 and i in id_to_text]
+def search_by_row(query, index, mapping, k=1):
+    q_emb = model.encode([query]).astype("float32")
+    _, I = index.search(q_emb, k)
+
+    if len(I[0]) == 0:
+        return ""
+
+    best_id = int(I[0][0])
+    best_no = mapping[best_id]["no"]
+
+    results = []
+    for v in mapping.values():
+        if v["no"] == best_no:
+            results.append(v["text"])
+
+    return "\n\n".join(results)
+
 
 laporan_bp = Blueprint("laporan_bp", __name__, url_prefix="/laporan")
 
@@ -106,7 +115,7 @@ def create_laporan():
                 id_to_text = pickle.load(f)
             index = faiss.read_index(FAISS_INDEX_FILE)
             # Ambil 3 chunk teratas untuk mendapatkan konteks baris tabel yang utuh
-            matches = search_with_faiss(query_text, index, id_to_text, k=3)
+            matches = search_by_row(query_text, index, id_to_text)
         except Exception as e:
             print(f"FAISS Error: {e}")
             pass
