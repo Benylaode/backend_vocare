@@ -225,6 +225,7 @@ TUGAS ANDA:
 1. Baca "KONDISI PASIEN".
 2. Pilih SATU "OPSI DIAGNOSA" dari database yang paling cocok.
 3. OUTPUT JSON HARUS BERISI DATA LENGKAP DARI OPSI YANG DIPILIH.
+4. Gabungkan semua isi diagnosis yang dipilih menjadi SATU output JSON tunggal.
 
 ATURAN KRUSIAL (JANGAN DILANGGAR):
 - **SDKI, SIKI, SLKI**: Anda DILARANG MERINGKAS, MEMOTONG, atau MEMILIH POIN TERTENTU.
@@ -245,6 +246,25 @@ ATURAN PEMILIHAN DIAGNOSA (CRITICAL):
 2. JANGAN MEMILIH Opsi Diagnosa yang data objektifnya TIDAK COCOK, meskipun ada satu atau dua kata kunci yang sama.
 3. CONTOH: Jika pasien "Mulut Kering" tapi tidak ada luka, JANGAN PILIH "Gangguan Integritas Kulit" walaupun di database ada kata "kering". Pilih yang lebih relevan seperti "Defisit Nutrisi" atau "Hipovolemia" jika ada.
 4. Prioritaskan diagnosa yang mencakup keluhan UTAMA pasien (misal: Kelemahan tubuh sesisi).
+
+ATURAN PENGGABUNGAN DAN FORMATTING:
+- **Assessment**: Gabungkan Judul Diagnosis dengan tanda koma atau simbol "&" (Contoh: "Nyeri Akut (D.0077) & Gangguan Mobilitas Fisik (D.0054)").
+- **SDKI, SIKI, SLKI**: Masukkan isi dari SEMUA diagnosis yang dipilih ke dalam masing-masing array.
+- **SEPARATOR (PENTING)**: Di dalam array SDKI, SIKI, dan SLKI, gunakan string khusus "--------------------" (garis putus-putus) untuk memisahkan item milik Diagnosis 1 dan Diagnosis 2.
+- **Urutan**: Tulis item Diagnosis 1, lalu separator, lalu item Diagnosis 2.
+
+CONTOH FORMAT LIST (Misalnya SIKI):
+[
+  "Observasi: Identifikasi skala nyeri",
+  "Terapeutik: Berikan teknik relaksasi",
+  "--------------------",  <-- INI SEPARATOR
+  "Observasi: Identifikasi kekuatan otot (Milik Diagnosa 2)",
+  "Terapeutik: Fasilitasi mobilisasi (Milik Diagnosa 2)"
+]
+
+ATURAN KONTEN:
+- Tetap lakukan COPY-PASTE sesuai teks asli di database.
+- Jangan meringkas kalimat.
 
 FORMAT JSON OUTPUT:
 {
