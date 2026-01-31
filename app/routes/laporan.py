@@ -223,7 +223,7 @@ Anda adalah Sistem Otomasi CPPT (Catatan Perkembangan Pasien Terintegrasi).
 
 TUGAS ANDA:
 1. Baca "KONDISI PASIEN".
-2. Pilih SATU "OPSI DIAGNOSA" dari database yang paling cocok.
+2. Pilih Semua "OPSI DIAGNOSA" yang relevan dari database yang paling cocok (1-4).
 3. OUTPUT JSON HARUS BERISI DATA LENGKAP DARI OPSI YANG DIPILIH.
 4. Gabungkan semua isi diagnosis yang dipilih menjadi SATU output JSON tunggal.
 
@@ -289,7 +289,7 @@ Objektif: {final_objective}
 {context_text}
 
 --- INSTRUKSI ---
-Pilih satu diagnosa yang paling relevan.
+Pilih diagnosa yang paling relevan.
 Lalu SALIN SEMUA ISINYA ke dalam JSON tanpa pengurangan sedikitpun.
 """
 
