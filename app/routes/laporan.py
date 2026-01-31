@@ -178,94 +178,72 @@ def create_laporan():
 
     query_text = payload["query"]
     patient_id = payload["patient_id"]
-
     patient = Patient.query.get(patient_id)
+
     if not patient:
         return jsonify({"status": 404, "message": "Pasien tidak ditemukan"}), 404
-
     if user.role.name != 'admin' and user.ruangan and patient.ruangan != user.ruangan:
-        return jsonify({"status": 403, "message": f"Anda hanya boleh menangani pasien di ruangan {user.ruangan}"}), 403
+        return jsonify({"status": 403, "message": "Akses ruangan ditolak"}), 403
 
-    # -----------------------------------------------------
-    # 1. RETRIEVAL & STRUCTURING
-    # -----------------------------------------------------
-    context_text = "" 
-    matched_symptoms = ""
-    
-    # Variabel untuk menampung hasil split Subjective/Objective dari AI
+    # --- 1. RETRIEVAL ---
+    context_text = ""
     ai_subjective = "-"
     ai_objective = "-"
 
     try:
         symptom_index, symptom_map, full_index, full_map = load_dual_indexes(BASE_DIR)
-
-        # Cari top-3 diagnosa yang relevan dengan query terstruktur
-        res_full, res_symptom, res_structured = search_dual_index(
-            query_text,
-            symptom_index,
-            symptom_map,
-            full_map,
-            k=4 # Kita ambil 4 kandidat agar AI punya banyak opsi
+        
+        # Ambil 4 Kandidat
+        res_full, _, res_structured = search_dual_index(
+            query_text, symptom_index, symptom_map, full_map, k=4
         )
 
         if res_full:
             context_text = res_full
-            matched_symptoms = res_symptom
-            
-            # Parsing hasil structure_query_with_llm untuk DB
-            # Format output AI: "KELUHAN PASIEN (Subjektif): ... \n TEMUAN KLINIS (Objektif): ..."
+            # Parsing S/O dari AI Structure
             try:
                 lines = res_structured.split('\n')
                 for line in lines:
-                    if "Subjektif" in line and ":" in line:
-                        val = line.split(":", 1)[1].strip()
-                        if val != "-" and val != "": ai_subjective = val
-                    elif "Objektif" in line and ":" in line:
-                        val = line.split(":", 1)[1].strip()
-                        if val != "-" and val != "": ai_objective = val
-            except:
-                pass # Jika gagal parsing, biarkan "-"
-
+                    if "Subjektif" in line: ai_subjective = line.split(":", 1)[1].strip()
+                    elif "Objektif" in line: ai_objective = line.split(":", 1)[1].strip()
+            except: pass
         else:
-            context_text = "TIDAK DITEMUKAN REFERENSI YANG COCOK DALAM DATABASE."
+            context_text = "DATA TIDAK DITEMUKAN."
 
     except Exception as e:
-        print(f"FAISS Retrieval Error: {e}")
-        context_text = "Error sistem retrieval database."
+        print(f"Error: {e}")
+        context_text = "Error retrieval."
 
+    final_subjective = ai_subjective if ai_subjective != "-" and ai_subjective != "" else query_text
+    final_objective = ai_objective if ai_objective != "-" else ""
 
-    # -----------------------------------------------------
-    # 2. PROMPT ENGINEERING (MULTI-CHOICE AWARE)
-    # -----------------------------------------------------
-    
-    # Jika parsing gagal total, gunakan query asli
-    final_subjective = ai_subjective if ai_subjective != "-" else query_text
-    final_objective = ai_objective
-
+    # --- 2. SYSTEM PROMPT (PERBAIKAN UTAMA: STRICT COPY PASTE) ---
     system_prompt = """
-Anda adalah Spesialis Dokumentasi Keperawatan (CPPT).
+Anda adalah Sistem Otomasi CPPT (Catatan Perkembangan Pasien Terintegrasi).
 
 TUGAS ANDA:
-Anda akan menerima data "KONDISI PASIEN" dan beberapa "OPSI DIAGNOSA" (SDKI/SIKI/SLKI) dari database.
+1. Baca "KONDISI PASIEN".
+2. Pilih SATU "OPSI DIAGNOSA" dari database yang paling cocok.
+3. OUTPUT JSON HARUS BERISI DATA LENGKAP DARI OPSI YANG DIPILIH.
 
-INSTRUKSI PENGISIAN JSON:
-1. **Analisis**: Bandingkan kondisi pasien dengan OPSI DIAGNOSA yang tersedia.
-2. **Seleksi**: Pilih SATU diagnosa utama yang paling akurat/urgent. Jika ada komorbid, boleh digabung tapi utamakan diagnosa prioritas.
-3. **Subjective & Objective**: Isi ringkasan berdasarkan data kondisi pasien.
-4. **Assessment**: Tulis NAMA DIAGNOSA yang Anda pilih dari buku.
-5. **SDKI/SIKI/SLKI**: Salin poin-poin intervensi HANYA dari diagnosa yang Anda pilih. Jangan mencampur semua opsi.
+ATURAN KRUSIAL (JANGAN DILANGGAR):
+- **SDKI, SIKI, SLKI**: Anda DILARANG MERINGKAS, MEMOTONG, atau MEMILIH POIN TERTENTU.
+- **COPY-PASTE TOTAL**: Jika Anda memilih "Opsi Diagnosa 1", maka SELURUH TEKS intervensi, observasi, terapeutik, edukasi, dan kolaborasi yang ada di teks Opsi 1 harus dimasukkan ke dalam array JSON.
+- **JANGAN ADA YANG TERTINGGAL**: Jika di teks asli ada 10 poin intervensi, di JSON output harus ada 10 string.
+- **Subjective & Objective**: Isi sesuai input kondisi pasien.
+- **Assessment**: Isi dengan Judul Diagnosa yang Anda pilih.
 
-FORMAT OUTPUT JSON FINAL:
+FORMAT JSON OUTPUT:
 {
   "subjective": "...",
   "objective": "...",
-  "assessment": "...",
-  "plan": "...",
+  "assessment": "JUDUL DIAGNOSA (Kode)",
+  "plan": "Tulis 'Lakukan Intervensi Sesuai SIKI/SLKI'",
   "tindakan_lanjutan": "...",
-  "keterangan": "Jelaskan kenapa memilih diagnosa ini dari opsi yang ada.",
-  "SDKI": ["..."],
-  "SIKI": ["..."],
-  "SLKI": ["..."]
+  "keterangan": "...",
+  "SDKI": ["Salin semua poin SDKI disini..."],
+  "SIKI": ["Salin semua poin SIKI (Observasi, Terapeutik, Edukasi, Kolaborasi) disini..."],
+  "SLKI": ["Salin semua kriteria hasil SLKI disini..."]
 }
 """
 
@@ -274,55 +252,47 @@ FORMAT OUTPUT JSON FINAL:
 Subjektif: {final_subjective}
 Objektif: {final_objective}
 
---- OPSI DIAGNOSA DARI DATABASE (PILIH YANG PALING COCOK) ---
+--- PILIHAN DATA DARI DATABASE (OPSI LENGKAP) ---
 {context_text}
 
 --- INSTRUKSI ---
-Buat JSON CPPT sekarang. Pastikan Assessment sesuai dengan salah satu opsi diagnosa di atas.
+Pilih satu diagnosa yang paling relevan.
+Lalu SALIN SEMUA ISINYA ke dalam JSON tanpa pengurangan sedikitpun.
 """
 
-    # -----------------------------------------------------
-    # 3. EKSEKUSI LLM GENERATION
-    # -----------------------------------------------------
+    # --- 3. EXECUTE LLM ---
     try:
         completion = client.chat.completions.create(
             model=api_model,
-            temperature=0.2, 
+            temperature=0.1, # Suhu sangat rendah agar patuh copy-paste
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt_content}
             ],
         )
-
         ai_json = completion.choices[0].message.content
         ai_json = re.sub(r"^```json\s*|\s*```$", "", ai_json.strip(), flags=re.MULTILINE)
         parsed = json.loads(ai_json)
 
     except Exception as e:
-        print(f"LLM Generation Error: {e}")
         parsed = {
-            "subjective": final_subjective,
-            "objective": final_objective,
-            "assessment": "Gagal memproses AI",
-            "plan": "-",
-            "tindakan_lanjutan": "-",
-            "keterangan": f"Error: {str(e)}",
+            "subjective": final_subjective, "objective": final_objective,
+            "assessment": "Gagal", "plan": "-", "tindakan_lanjutan": "-", "keterangan": str(e),
             "SDKI": [], "SIKI": [], "SLKI": []
         }
 
-    # -----------------------------------------------------
-    # 4. SIMPAN KE DATABASE
-    # -----------------------------------------------------
+    # --- 4. SAVE TO DB ---
+    # Validasi Assessment
     assess_str = parsed.get("assessment", "")
-    if (not assess_str or assess_str == "-") and parsed.get("SDKI"):
-        assess_str = parsed["SDKI"][0] if len(parsed["SDKI"]) > 0 else "Diagnosa Teridentifikasi"
+    if not assess_str or assess_str == "-":
+        assess_str = "Diagnosa Keperawatan"
 
     laporan = Laporan(
         patient=patient,
         user_id=user_id,
         tanggal=datetime.utcnow(),
-        subjective=parsed.get("subjective", final_subjective),
-        objective=parsed.get("objective", final_objective),
+        subjective=parsed.get("subjective", "-"),
+        objective=parsed.get("objective", "-"),
         assessment=assess_str,
         plan=parsed.get("plan", "-"),
         tindakan_lanjutan=parsed.get("tindakan_lanjutan", "-"),
@@ -337,14 +307,9 @@ Buat JSON CPPT sekarang. Pastikan Assessment sesuai dengan salah satu opsi diagn
 
     return jsonify({
         "status": 201,
-        "message": "Laporan (Askeb) berhasil dibuat dengan Intelligent Retrieval",
+        "message": "Laporan berhasil dibuat (Full Standard Copy)",
         "data": laporan_to_dict(laporan)
     }), 201
-
-
-# ================== ROUTE LAINNYA (GET/PUT/DELETE) TETAP SAMA ==================
-# (Anda bisa menyalin fungsi get_laporans, get_laporan, update, delete 
-# dari kode lama Anda di bawah baris ini)
 
 @laporan_bp.route("/", methods=["GET"])
 @jwt_required()
