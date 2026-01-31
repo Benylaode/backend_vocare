@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from app.model import db, Laporan, Patient, Intervensi, CPPT, User
+from app.model import db, Laporan, Patient, User
 import os, json, pickle, re
 from datetime import datetime
 from dotenv import load_dotenv
@@ -19,85 +19,19 @@ client = OpenAI(
     api_key=api_key,
 )
 
+# Inisialisasi Model Embedding
 model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
+# Konfigurasi Path
 FAISS_INDEX_FILE = "app/faisses/siki-slki-sdki/siki-slki-sdki.faiss"
 MAPPING_FILE = "app/faisses/siki-slki-sdki/siki-slki-sdki.pkl"
-
-def retrieve_full_context(query, base_dir):
-    # Load symptom index
-    s_index = faiss.read_index(os.path.join(base_dir, "symptom.faiss"))
-    with open(os.path.join(base_dir, "symptom.pkl"), "rb") as f:
-        s_map = pickle.load(f)
-
-    # Search NO terbaik
-    q_emb = model.encode([query]).astype("float32")
-    _, I = s_index.search(q_emb, 1)
-
-    best_id = int(I[0][0])
-    best_no = s_map[best_id]["no"]
-
-    # Load full index
-    with open(os.path.join(base_dir, "full.pkl"), "rb") as f:
-        f_map = pickle.load(f)
-
-    # Ambil full row
-    for v in f_map.values():
-        if v["no"] == best_no:
-            return v["text"]
-
-    return "Tidak ada referensi ditemukan."
-
-
-def load_dual_indexes(base_dir):
-    """
-    Load symptom + full FAISS index dan mapping
-    """
-    symptom_faiss = os.path.join(base_dir, "symptom.faiss")
-    symptom_pkl = os.path.join(base_dir, "symptom.pkl")
-    full_faiss = os.path.join(base_dir, "full.faiss")
-    full_pkl = os.path.join(base_dir, "full.pkl")
-
-    if not all(map(os.path.exists, [symptom_faiss, symptom_pkl, full_faiss, full_pkl])):
-        raise FileNotFoundError("Dual index belum tersedia. Upload PDF SDKI-SIKI-SLKI dulu.")
-
-    symptom_index = faiss.read_index(symptom_faiss)
-    full_index = faiss.read_index(full_faiss)
-
-    with open(symptom_pkl, "rb") as f:
-        symptom_map = pickle.load(f)
-
-    with open(full_pkl, "rb") as f:
-        full_map = pickle.load(f)
-
-    return symptom_index, symptom_map, full_index, full_map
-# Di app/laporan.py
-
-def search_dual_index(query, symptom_index, symptom_map, full_map, k=1):
-    # Cari di Index Gejala (Fokus DS/DO)
-    q_emb = model.encode([query]).astype("float32")
-    _, I = symptom_index.search(q_emb, k) # Tetap K=1 agar "Kaku"
-
-    if len(I[0]) == 0 or I[0][0] == -1:
-        return None, None # Return None jika tidak ketemu
-
-    best_id = int(I[0][0])
-    best_no = symptom_map[best_id]["no"]
-    
-    # Ambil Data Gejala yang cocok (untuk validasi prompt)
-    matched_symptoms = symptom_map[best_id]["text"]
-
-    # Ambil Full Context (SDKI, SIKI, SLKI)
-    full_context = ""
-    for v in full_map.values():
-        if v["no"] == best_no:
-            full_context = v["text"]
-            break
-
-    return full_context, matched_symptoms
-
+BASE_DIR = "app/faisses/siki-slki-sdki"
 
 laporan_bp = Blueprint("laporan_bp", __name__, url_prefix="/laporan")
+
+# ==========================================================
+# 1. HELPER FUNCTIONS (PRE-PROCESSING & SEARCH)
+# ==========================================================
 
 def safe_json(val):
     try:
@@ -122,24 +56,116 @@ def laporan_to_dict(l):
         "user_id": l.user_id
     }
 
-# ================== GET ALL ==================
-@laporan_bp.route("/", methods=["GET"])
-@jwt_required()
-def get_laporans():
-    user_id = int(get_jwt_identity())
-    user = User.query.get(user_id)
+def load_dual_indexes(base_dir):
+    """Load symptom + full FAISS index dan mapping"""
+    symptom_faiss = os.path.join(base_dir, "symptom.faiss")
+    symptom_pkl = os.path.join(base_dir, "symptom.pkl")
+    full_faiss = os.path.join(base_dir, "full.faiss")
+    full_pkl = os.path.join(base_dir, "full.pkl")
 
-    query = Laporan.query
+    if not all(map(os.path.exists, [symptom_faiss, symptom_pkl, full_faiss, full_pkl])):
+        raise FileNotFoundError("Dual index belum tersedia. Upload PDF SDKI-SIKI-SLKI dulu.")
 
-    if user.role.name != 'admin' and user.ruangan:
-        query = query.join(Patient).filter(Patient.ruangan == user.ruangan)
+    symptom_index = faiss.read_index(symptom_faiss)
+    full_index = faiss.read_index(full_faiss)
 
-    laporans = query.order_by(Laporan.tanggal.desc()).all()
-    data = [laporan_to_dict(l) for l in laporans]
+    with open(symptom_pkl, "rb") as f:
+        symptom_map = pickle.load(f)
 
-    return jsonify({"status": 200, "message": "Success", "data": data}), 200
+    with open(full_pkl, "rb") as f:
+        full_map = pickle.load(f)
 
-# ================== CREATE ==================
+    return symptom_index, symptom_map, full_index, full_map
+
+def structure_query_with_llm(raw_query):
+    """
+    Mengubah input mentah menjadi format Subjective/Objective 
+    agar cocok dengan format index FAISS.
+    """
+    system_prompt = """
+    Anda adalah asisten triase medis. 
+    Tugas: Ekstrak input user menjadi dua bagian: DATA SUBJEKTIF dan DATA OBJEKTIF.
+    
+    Format Output Wajib (Jangan tambah kata lain):
+    KELUHAN PASIEN (Subjektif): [Isi data subjektif, jika tidak ada tulis '-']
+    TEMUAN KLINIS (Objektif): [Isi data objektif, jika tidak ada tulis '-']
+    """
+    
+    try:
+        completion = client.chat.completions.create(
+            model=api_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": raw_query}
+            ],
+            temperature=0.1
+        )
+        return completion.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Error structuring query: {e}")
+        return f"KELUHAN PASIEN (Subjektif): {raw_query}\nTEMUAN KLINIS (Objektif): -"
+
+def search_dual_index(query, symptom_index, symptom_map, full_map, k=3):
+    """
+    Melakukan pencarian dengan query terstruktur dan mengambil Top-K hasil.
+    Mengembalikan: Full Context (gabungan), Symptom Context, dan Structured Query.
+    """
+    
+    structured_query = structure_query_with_llm(query)
+    print(f"DEBUG: Query Terstruktur -> \n{structured_query}")
+
+    # 2. Encode & Search
+    q_emb = model.encode([structured_query]).astype("float32")
+    
+    # Ambil k hasil teratas (misal 3)
+    D, I = symptom_index.search(q_emb, k)
+
+    if len(I[0]) == 0 or I[0][0] == -1:
+        return None, None, structured_query
+
+    combined_full_context = []
+    combined_symptoms = []
+    found_nos = set() # Untuk mencegah duplikasi diagnosa
+
+    # 3. Looping Hasil FAISS (FIX LOGIKA LAMA)
+    for idx in I[0]:
+        idx = int(idx)
+        if idx == -1: continue
+        if idx not in symptom_map: continue
+            
+        candidate = symptom_map[idx]
+        candidate_no = candidate["no"]
+        
+        # Skip jika nomor diagnosa ini sudah diambil
+        if candidate_no in found_nos:
+            continue
+        found_nos.add(candidate_no)
+
+        # Ambil Teks Gejala untuk referensi prompt
+        combined_symptoms.append(f"[Kandidat Diagnosa NO {candidate_no}]:\n{candidate['text']}")
+
+        # Ambil Full Text (SDKI, SIKI, SLKI) dari full_map
+        for v in full_map.values():
+            if v["no"] == candidate_no:
+                header = f"--- OPSI DIAGNOSA KE-{len(found_nos)} (ID BUKU: {candidate_no}) ---"
+                combined_full_context.append(f"{header}\n{v['text']}")
+                break
+    
+    # Jika tidak ada hasil valid
+    if not combined_full_context:
+        return None, None, structured_query
+
+    # Gabungkan string
+    final_context = "\n\n".join(combined_full_context)
+    final_symptoms = "\n\n".join(combined_symptoms)
+
+    return final_context, final_symptoms, structured_query
+
+
+# ==========================================================
+# 2. ROUTE: CREATE LAPORAN (UPDATED)
+# ==========================================================
+
 @laporan_bp.route("/", methods=["POST"])
 @jwt_required()
 def create_laporan():
@@ -160,64 +186,74 @@ def create_laporan():
     if user.role.name != 'admin' and user.ruangan and patient.ruangan != user.ruangan:
         return jsonify({"status": 403, "message": f"Anda hanya boleh menangani pasien di ruangan {user.ruangan}"}), 403
 
-    # =====================================================
-    # 1. RETRIEVAL (MENGAMBIL DATA BUKU)
-    # =====================================================
-    BASE_DIR = "app/faisses/siki-slki-sdki"
-    
-    # Default variable
+    # -----------------------------------------------------
+    # 1. RETRIEVAL & STRUCTURING
+    # -----------------------------------------------------
     context_text = "" 
     matched_symptoms = ""
-    is_retrieval_success = False
     
+    # Variabel untuk menampung hasil split Subjective/Objective dari AI
+    ai_subjective = "-"
+    ai_objective = "-"
+
     try:
         symptom_index, symptom_map, full_index, full_map = load_dual_indexes(BASE_DIR)
 
-        # K=1: Ambil 1 Referensi Diagnosa Terbaik (Paling Relevan)
-        res_full, res_symptom = search_dual_index(
+        # Cari top-3 diagnosa yang relevan dengan query terstruktur
+        res_full, res_symptom, res_structured = search_dual_index(
             query_text,
             symptom_index,
             symptom_map,
             full_map,
-            k=1 
+            k=4 # Kita ambil 4 kandidat agar AI punya banyak opsi
         )
 
-        if res_full and res_symptom:
+        if res_full:
             context_text = res_full
             matched_symptoms = res_symptom
-            is_retrieval_success = True
+            
+            # Parsing hasil structure_query_with_llm untuk DB
+            # Format output AI: "KELUHAN PASIEN (Subjektif): ... \n TEMUAN KLINIS (Objektif): ..."
+            try:
+                lines = res_structured.split('\n')
+                for line in lines:
+                    if "Subjektif" in line and ":" in line:
+                        val = line.split(":", 1)[1].strip()
+                        if val != "-" and val != "": ai_subjective = val
+                    elif "Objektif" in line and ":" in line:
+                        val = line.split(":", 1)[1].strip()
+                        if val != "-" and val != "": ai_objective = val
+            except:
+                pass # Jika gagal parsing, biarkan "-"
+
         else:
             context_text = "TIDAK DITEMUKAN REFERENSI YANG COCOK DALAM DATABASE."
 
     except Exception as e:
-        print(f"FAISS Error: {e}")
+        print(f"FAISS Retrieval Error: {e}")
         context_text = "Error sistem retrieval database."
 
-    # =====================================================
-    # 2. PROMPT "HYBRID MAPPING" (SANGAT RELEVAN)
-    # =====================================================
-    # Strategi: 
-    # - Subjective/Objective -> Ambil dari INPUT USER (Kondisi Real).
-    # - Assessment/Plan (SDKI/SIKI/SLKI) -> Ambil dari DATABASE (Standar Buku).
-    # - Jembatan -> AI menjelaskan kenapa Input User cocok dengan Standar Buku.
+
+    # -----------------------------------------------------
+    # 2. PROMPT ENGINEERING (MULTI-CHOICE AWARE)
+    # -----------------------------------------------------
+    
+    # Jika parsing gagal total, gunakan query asli
+    final_subjective = ai_subjective if ai_subjective != "-" else query_text
+    final_objective = ai_objective
 
     system_prompt = """
 Anda adalah Spesialis Dokumentasi Keperawatan (CPPT).
 
 TUGAS ANDA:
-Anda menerima dua sumber data:
-1. "KONDISI PASIEN" (Input Real dari Perawat).
-2. "STANDAR ASUHAN KEPERAWATAN" (Data Buku SDKI/SIKI/SLKI yang telah dipilih sistem).
+Anda akan menerima data "KONDISI PASIEN" dan beberapa "OPSI DIAGNOSA" (SDKI/SIKI/SLKI) dari database.
 
-INSTRUKSI PENGISIAN JSON (WAJIB):
-1. **Subjective & Objective:** Isi berdasarkan ringkasan "KONDISI PASIEN".
-2. **Assessment (Diagnosa):** SALIN JUDUL DIAGNOSA dari "STANDAR ASUHAN KEPERAWATAN".
-3. **SDKI, SIKI, SLKI (Array):** SALIN PERSIS poin-poin (bullet points) dari "STANDAR ASUHAN KEPERAWATAN" ke dalam array. JANGAN DIUBAH/DIKURANGI. Dan ambil sdki yang sejajar dengan data objectif dan subjetif yang sesuai dan masuk dengan data subjektif yang di temukan pada queri.
-4. **Keterangan:** Jelaskan hubungan relevansi. Contoh: "Diagnosa ini dipilih karena keluhan pasien [sebutkan keluhan] sesuai dengan indikator [sebutkan gejala buku]".
-
-ATURAN KRUSIAL:
-- JIKA "STANDAR ASUHAN KEPERAWATAN" TERSEDIA, ANDA DILARANG MENGOSONGKAN ARRAY SDKI/SIKI/SLKI.
-- PAKSAKAN MAPPING JIKA ADA KEMIRIPAN GEJALA SEDIKITPUN.
+INSTRUKSI PENGISIAN JSON:
+1. **Analisis**: Bandingkan kondisi pasien dengan OPSI DIAGNOSA yang tersedia.
+2. **Seleksi**: Pilih SATU diagnosa utama yang paling akurat/urgent. Jika ada komorbid, boleh digabung tapi utamakan diagnosa prioritas.
+3. **Subjective & Objective**: Isi ringkasan berdasarkan data kondisi pasien.
+4. **Assessment**: Tulis NAMA DIAGNOSA yang Anda pilih dari buku.
+5. **SDKI/SIKI/SLKI**: Salin poin-poin intervensi HANYA dari diagnosa yang Anda pilih. Jangan mencampur semua opsi.
 
 FORMAT OUTPUT JSON FINAL:
 {
@@ -225,8 +261,8 @@ FORMAT OUTPUT JSON FINAL:
   "objective": "...",
   "assessment": "...",
   "plan": "...",
-  "tindakan_lanjutan": "Saran operasional...",
-  "keterangan": "...",
+  "tindakan_lanjutan": "...",
+  "keterangan": "Jelaskan kenapa memilih diagnosa ini dari opsi yang ada.",
   "SDKI": ["..."],
   "SIKI": ["..."],
   "SLKI": ["..."]
@@ -234,26 +270,24 @@ FORMAT OUTPUT JSON FINAL:
 """
 
     user_prompt_content = f"""
---- SUMBER DATA 1: KONDISI PASIEN (INPUT PERAWAT) ---
-"{query_text}"
+--- KONDISI PASIEN ---
+Subjektif: {final_subjective}
+Objektif: {final_objective}
 
---- SUMBER DATA 2: STANDAR ASUHAN KEPERAWATAN (HASIL RETRIEVAL DB) ---
-(Sistem mendeteksi kemiripan gejala di sini: {matched_symptoms})
-
-ISI LENGKAP STANDAR (SDKI/SIKI/SLKI):
+--- OPSI DIAGNOSA DARI DATABASE (PILIH YANG PALING COCOK) ---
 {context_text}
 
 --- INSTRUKSI ---
-Buat JSON CPPT sekarang. Pastikan SDKI, SIKI, dan SLKI disalin penuh dari SUMBER DATA 2.
+Buat JSON CPPT sekarang. Pastikan Assessment sesuai dengan salah satu opsi diagnosa di atas.
 """
 
-    # =====================================================
-    # 3. EKSEKUSI LLM
-    # =====================================================
+    # -----------------------------------------------------
+    # 3. EKSEKUSI LLM GENERATION
+    # -----------------------------------------------------
     try:
         completion = client.chat.completions.create(
             model=api_model,
-            temperature=0.2, # Rendah agar patuh pada teks buku
+            temperature=0.2, 
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt_content}
@@ -265,24 +299,20 @@ Buat JSON CPPT sekarang. Pastikan SDKI, SIKI, dan SLKI disalin penuh dari SUMBER
         parsed = json.loads(ai_json)
 
     except Exception as e:
-        print(f"LLM Processing Error: {e}")
-        # Fallback agar user tetap dapat feedback meski AI gagal
+        print(f"LLM Generation Error: {e}")
         parsed = {
-            "subjective": query_text,
-            "objective": "-",
+            "subjective": final_subjective,
+            "objective": final_objective,
             "assessment": "Gagal memproses AI",
             "plan": "-",
             "tindakan_lanjutan": "-",
             "keterangan": f"Error: {str(e)}",
-            "SDKI": [],
-            "SIKI": [],
-            "SLKI": []
+            "SDKI": [], "SIKI": [], "SLKI": []
         }
 
-    # =====================================================
+    # -----------------------------------------------------
     # 4. SIMPAN KE DATABASE
-    # =====================================================
-    # Validasi Assessment String
+    # -----------------------------------------------------
     assess_str = parsed.get("assessment", "")
     if (not assess_str or assess_str == "-") and parsed.get("SDKI"):
         assess_str = parsed["SDKI"][0] if len(parsed["SDKI"]) > 0 else "Diagnosa Teridentifikasi"
@@ -291,8 +321,8 @@ Buat JSON CPPT sekarang. Pastikan SDKI, SIKI, dan SLKI disalin penuh dari SUMBER
         patient=patient,
         user_id=user_id,
         tanggal=datetime.utcnow(),
-        subjective=parsed.get("subjective", "-"),
-        objective=parsed.get("objective", "-"),
+        subjective=parsed.get("subjective", final_subjective),
+        objective=parsed.get("objective", final_objective),
         assessment=assess_str,
         plan=parsed.get("plan", "-"),
         tindakan_lanjutan=parsed.get("tindakan_lanjutan", "-"),
@@ -307,11 +337,27 @@ Buat JSON CPPT sekarang. Pastikan SDKI, SIKI, dan SLKI disalin penuh dari SUMBER
 
     return jsonify({
         "status": 201,
-        "message": "Laporan (Askeb) berhasil dibuat",
+        "message": "Laporan (Askeb) berhasil dibuat dengan Intelligent Retrieval",
         "data": laporan_to_dict(laporan)
     }), 201
 
-# ================== GET BY ID ==================
+
+# ================== ROUTE LAINNYA (GET/PUT/DELETE) TETAP SAMA ==================
+# (Anda bisa menyalin fungsi get_laporans, get_laporan, update, delete 
+# dari kode lama Anda di bawah baris ini)
+
+@laporan_bp.route("/", methods=["GET"])
+@jwt_required()
+def get_laporans():
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    query = Laporan.query
+    if user.role.name != 'admin' and user.ruangan:
+        query = query.join(Patient).filter(Patient.ruangan == user.ruangan)
+    laporans = query.order_by(Laporan.tanggal.desc()).all()
+    data = [laporan_to_dict(l) for l in laporans]
+    return jsonify({"status": 200, "message": "Success", "data": data}), 200
+
 @laporan_bp.route("/<int:id>", methods=["GET"])
 @jwt_required()
 def get_laporan(id):
