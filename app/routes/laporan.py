@@ -233,6 +233,13 @@ ATURAN KRUSIAL (JANGAN DILANGGAR):
 - **Subjective & Objective**: Isi sesuai input kondisi pasien.
 - **Assessment**: Isi dengan Judul Diagnosa yang Anda pilih.
 
+ATURAN PENGISIAN FIELD JSON:
+1. **subjective & objective**: Isi dengan KONDISI PASIEN (Real).
+2. **assessment**: Isi dengan JUDUL/NAMA DIAGNOSA yang dipilih (Contoh: "Nyeri Akut (D.0077)").
+3. **SDKI**: Isi array ini HANYA dengan Nama Diagnosa, Kode, dan Penyebab/Faktor Risiko (jika ada di teks). **PENTING: JANGAN masukkan list "Data Subjektif" atau "Data Objektif" dari buku ke dalam array SDKI ini, karena itu akan duplikat dengan data pasien.**
+4. **SIKI**: Salin SEMUA poin intervensi (Observasi, Terapeutik, Edukasi, Kolaborasi).
+5. **SLKI**: Salin SEMUA kriteria hasil luaran.
+
 FORMAT JSON OUTPUT:
 {
   "subjective": "...",
