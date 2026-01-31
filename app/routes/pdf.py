@@ -54,59 +54,42 @@ def load_mapping(file_path: str):
     return {}
 
 def extract_text_from_pdf(pdf_path: str):
-    """Ekstrak teks dengan menjaga struktur layout."""
     text_content = []
-    try:
-        with pymupdf.open(pdf_path) as doc:
-            for page_num, page in enumerate(doc, start=1):
-                # Gunakan "blocks" untuk memisahkan header/footer dan paragraf
-                # Blocks return: (x0, y0, x1, y1, "text", block_no, block_type)
-                blocks = page.get_text("blocks")
-                page_text = ""
-                
-                for b in blocks:
-                    if b[6] == 0:  # Tipe 0 adalah teks
-                        cleaned_block = b[4].strip()
-                        if cleaned_block:
-                            page_text += cleaned_block + "\n\n" # Pisah antar blok dengan 2 enter
-                
-                if page_text.strip():
-                    text_content.append(f"--- Halaman {page_num} ---\n{page_text}")
-                
-                # Fallback ke OCR jika halaman kosong (Gambar)
-                elif reader: 
-                    pix = page.get_pixmap()
-                    img = Image.open(io.BytesIO(pix.tobytes("png")))
-                    img_np = np.array(img)
-                    ocr_result = reader.readtext(img_np, detail=0)
-                    ocr_text = "\n".join(ocr_result)
-                    if ocr_text.strip():
-                        text_content.append(f"--- Halaman {page_num} (OCR) ---\n{ocr_text}")
-                        
-    except Exception as e:
-        print(f"Error extracting text from PDF: {e}")
-        return None
-        
+    with pymupdf.open(pdf_path) as doc:
+        for page in doc:
+            # Gunakan mode "layout" atau "text" biasa untuk menjaga urutan aliran teks lebih baik daripada "blocks" untuk tabel sederhana
+            text = page.get_text("text", sort=True) 
+            text_content.append(text)
     return "\n".join(text_content)
 
 import re  # Pastikan ini ada di paling atas file
 
 def split_by_no(text):
-    """
-    Memecah dokumen berdasarkan nomor diagnosis (NO 1, NO 2, dst)
-    Return: list of dict {no, content}
-    """
-    pattern = r"\n\s*(\d+)\s+(?=[A-Z])"
-    parts = re.split(pattern, text)
-
+    # Regex yang lebih ketat: 
+    # Mencari Angka di awal baris, diikuti spasi, lalu Judul Diagnosa.
+    # Contoh menangkap: "7  Gangguan Pola Tidur"
+    # Menghindari menangkap: "1. Monitor..." di dalam kolom intervensi
+    pattern = r"\n(?P<no>\d+)\s+(?P<judul>[A-Z][a-zA-Z\s\(\)\.]+)\s*\n"
+    
+    # Karena struktur tabel rumit, pendekatan split regex mungkin memotong data kolom.
+    # Pendekatan paling aman untuk Tabel PDF Medis adalah manual mapping atau library 'pdfplumber'.
+    
+    # TAPI, untuk memperbaiki logic Anda yang sekarang:
+    parts = re.split(r"\n\s*(?=\d+\s+[A-Z][a-z])", text) # Split lookahead
+    
     rows = []
-    for i in range(1, len(parts), 2):
-        no = parts[i]
-        content = parts[i + 1].strip()
-        rows.append({
-            "no": no,
-            "text": f"NO {no}\n{content}"
-        })
+    for p in parts:
+        if not p.strip(): continue
+        
+        # Coba ambil nomor di awal chunk
+        match = re.match(r"\s*(\d+)", p)
+        if match:
+            no = match.group(1)
+            rows.append({
+                "no": no,
+                "text": f"NO {no}\n{p.strip()}" # Simpan seluruh teks chunk
+            })
+            
     return rows
 
 

@@ -240,6 +240,12 @@ ATURAN PENGISIAN FIELD JSON:
 4. **SIKI**: Salin SEMUA poin intervensi (Observasi, Terapeutik, Edukasi, Kolaborasi).
 5. **SLKI**: Salin SEMUA kriteria hasil luaran.
 
+ATURAN PEMILIHAN DIAGNOSA (CRITICAL):
+1. Bandingkan "KONDISI PASIEN" dengan "DATA SUBJEKTIF/OBJEKTIF" pada setiap Opsi Diagnosa.
+2. JANGAN MEMILIH Opsi Diagnosa yang data objektifnya TIDAK COCOK, meskipun ada satu atau dua kata kunci yang sama.
+3. CONTOH: Jika pasien "Mulut Kering" tapi tidak ada luka, JANGAN PILIH "Gangguan Integritas Kulit" walaupun di database ada kata "kering". Pilih yang lebih relevan seperti "Defisit Nutrisi" atau "Hipovolemia" jika ada.
+4. Prioritaskan diagnosa yang mencakup keluhan UTAMA pasien (misal: Kelemahan tubuh sesisi).
+
 FORMAT JSON OUTPUT:
 {
   "subjective": "...",
