@@ -220,8 +220,7 @@ def create_cppt():
         }
 
     # 5. Simpan
-    now = datetime.now(timezone.utc)
-    now = now.astimezone(ZoneInfo("Asia/Makassar"))
+    now = datetime.now(ZoneInfo("Asia/Makassar"))
     print("Current Time (Asia/Makassar):", now)
     shift = determine_shift(now)
 
