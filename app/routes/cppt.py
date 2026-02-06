@@ -221,7 +221,7 @@ def create_cppt():
 
     # 5. Simpan
     now = datetime.now(ZoneInfo("Asia/Makassar"))
-    print("Current Time (Asia/Makassar):", now)
+    now = now.replace(tzinfo=None)
     shift = determine_shift(now)
 
     try:

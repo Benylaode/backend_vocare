@@ -129,7 +129,7 @@ class Laporan(db.Model):
 class CPPT(db.Model):
     __tablename__ = "CPPT"
     id = db.Column(db.Integer, primary_key=True)
-    tanggal = db.Column(db.DateTime, default=datetime.utcnow)
+    tanggal = db.Column(db.DateTime(timezone=True), default=datetime.utcnow)
     shift = db.Column(db.String(20), nullable=True)
     jabatan = db.Column(db.String(120), nullable=True)
 
@@ -152,7 +152,7 @@ class CPPT(db.Model):
 class Intervensi(db.Model):
     __tablename__ = "intervensi"
     id = db.Column(db.Integer, primary_key=True)
-    tanggal = db.Column(db.DateTime, default=datetime.utcnow)
+    tanggal = db.Column(db.DateTime(timezone=True), default=datetime.utcnow)
     implementasi = db.Column(db.Text, nullable=True)
     evaluasi = db.Column(db.Text, nullable=True)
 

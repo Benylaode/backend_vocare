@@ -93,8 +93,10 @@ def create_intervensi():
         return jsonify({"status": 404, "message": "Patient not found", "data": None}), 404
 
     # buat intervensi baru
+    waktu_makassar = datetime.now(ZoneInfo("Asia/Makassar"))
+    tanggal_simpan = waktu_makassar.replace(tzinfo=None)
     new_intervensi = Intervensi(
-        tanggal=datetime.now(ZoneInfo("Asia/Makassar")),
+        tanggal=tanggal_simpan,
         implementasi=implementasi,
         evaluasi=evaluasi,
         patient_id=patient_id,
