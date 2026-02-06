@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from app.model import db, Laporan, Patient, User
-import os, json, pickle, re
+import os, json, pickle, re, gc
 from datetime import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -9,7 +9,9 @@ import faiss
 from flask_jwt_extended import jwt_required, get_jwt_identity
 import numpy as np
 
-# --- Load API Key ---
+# ==========================================================
+# KONFIGURASI & ENV
+# ==========================================================
 load_dotenv()
 api_key = os.getenv("OPENROUTER_API_KEY_KU")
 api_model = os.getenv("API_MODEL")
@@ -19,18 +21,72 @@ client = OpenAI(
     api_key=api_key,
 )
 
-# Inisialisasi Model Embedding
-model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-
 # Konfigurasi Path
-FAISS_INDEX_FILE = "app/faisses/siki-slki-sdki/siki-slki-sdki.faiss"
-MAPPING_FILE = "app/faisses/siki-slki-sdki/siki-slki-sdki.pkl"
 BASE_DIR = "app/faisses/siki-slki-sdki"
 
 laporan_bp = Blueprint("laporan_bp", __name__, url_prefix="/laporan")
 
 # ==========================================================
-# 1. HELPER FUNCTIONS (PRE-PROCESSING & SEARCH)
+# 1. OPTIMIZATION ENGINE (MEMORY & CACHING)
+# ==========================================================
+
+# Global Variables untuk Caching (Hemat RAM & Waktu Load)
+_embedding_model = None
+_FAISS_CACHE = None
+_FULL_MAP_BY_NO = None
+
+def get_embedding_model():
+    """
+    Lazy Loading: Model hanya dimuat ke RAM saat pertama kali dipanggil.
+    """
+    global _embedding_model
+    if _embedding_model is None:
+        print("INFO: Loading Embedding Model...")
+        _embedding_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    return _embedding_model
+
+def load_dual_indexes(base_dir):
+    """
+    Caching: Index FAISS hanya dibaca sekali dari disk. Request berikutnya pakai RAM.
+    """
+    global _FAISS_CACHE
+    if _FAISS_CACHE is not None:
+        return _FAISS_CACHE
+
+    print("INFO: Loading FAISS Indexes from Disk...")
+    symptom_faiss = os.path.join(base_dir, "symptom.faiss")
+    symptom_pkl = os.path.join(base_dir, "symptom.pkl")
+    full_faiss = os.path.join(base_dir, "full.faiss")
+    full_pkl = os.path.join(base_dir, "full.pkl")
+
+    if not all(map(os.path.exists, [symptom_faiss, symptom_pkl, full_faiss, full_pkl])):
+        raise FileNotFoundError("Dual index belum tersedia. Upload PDF SDKI-SIKI-SLKI dulu.")
+
+    symptom_index = faiss.read_index(symptom_faiss)
+    full_index = faiss.read_index(full_faiss)
+
+    with open(symptom_pkl, "rb") as f:
+        symptom_map = pickle.load(f)
+    with open(full_pkl, "rb") as f:
+        full_map = pickle.load(f)
+
+    _FAISS_CACHE = (symptom_index, symptom_map, full_index, full_map)
+    return _FAISS_CACHE
+
+def index_full_map_by_no(full_map):
+    """
+    Indexing: Mengubah list pencarian menjadi Dictionary agar akses data O(1) (Instan).
+    """
+    global _FULL_MAP_BY_NO
+    if _FULL_MAP_BY_NO is None:
+        _FULL_MAP_BY_NO = {}
+        for v in full_map.values():
+            # Mengelompokkan teks berdasarkan nomor diagnosa
+            _FULL_MAP_BY_NO.setdefault(v["no"], []).append(v)
+    return _FULL_MAP_BY_NO
+
+# ==========================================================
+# 2. HELPER FUNCTIONS & LOGIC
 # ==========================================================
 
 def safe_json(val):
@@ -56,32 +112,15 @@ def laporan_to_dict(l):
         "user_id": l.user_id
     }
 
-def load_dual_indexes(base_dir):
-    """Load symptom + full FAISS index dan mapping"""
-    symptom_faiss = os.path.join(base_dir, "symptom.faiss")
-    symptom_pkl = os.path.join(base_dir, "symptom.pkl")
-    full_faiss = os.path.join(base_dir, "full.faiss")
-    full_pkl = os.path.join(base_dir, "full.pkl")
-
-    if not all(map(os.path.exists, [symptom_faiss, symptom_pkl, full_faiss, full_pkl])):
-        raise FileNotFoundError("Dual index belum tersedia. Upload PDF SDKI-SIKI-SLKI dulu.")
-
-    symptom_index = faiss.read_index(symptom_faiss)
-    full_index = faiss.read_index(full_faiss)
-
-    with open(symptom_pkl, "rb") as f:
-        symptom_map = pickle.load(f)
-
-    with open(full_pkl, "rb") as f:
-        full_map = pickle.load(f)
-
-    return symptom_index, symptom_map, full_index, full_map
-
 def structure_query_with_llm(raw_query):
     """
-    Mengubah input mentah menjadi format Subjective/Objective 
-    agar cocok dengan format index FAISS.
+    Optimasi: Cek panjang query dulu. Jika terlalu pendek, skip LLM (Hemat Token).
     """
+    # 1. Cek Hemat Token
+    if len(raw_query.strip()) < 15:
+        return f"KELUHAN PASIEN (Subjektif): {raw_query}\nTEMUAN KLINIS (Objektif): -"
+
+    # 2. Jika panjang, gunakan Prompt canggih dari Kode 2
     system_prompt = """
     Anda adalah asisten triase medis. 
     Tugas: Ekstrak input user menjadi dua bagian: DATA SUBJEKTIF dan DATA OBJEKTIF.
@@ -90,7 +129,6 @@ def structure_query_with_llm(raw_query):
     KELUHAN PASIEN (Subjektif): [Isi data subjektif, jika tidak ada tulis '-']
     TEMUAN KLINIS (Objektif): [Isi data objektif, jika tidak ada tulis '-']
     """
-    
     try:
         completion = client.chat.completions.create(
             model=api_model,
@@ -107,65 +145,66 @@ def structure_query_with_llm(raw_query):
 
 def search_dual_index(query, symptom_index, symptom_map, full_map, k=3):
     """
-    Melakukan pencarian dengan query terstruktur dan mengambil Top-K hasil.
-    Mengembalikan: Full Context (gabungan), Symptom Context, dan Structured Query.
+    Gabungan: Menggunakan output format Kode 2, tapi dengan Logic Optimasi Kode 1.
     """
-    
+    # Step A: Strukturisasi Query
     structured_query = structure_query_with_llm(query)
-    print(f"DEBUG: Query Terstruktur -> \n{structured_query}")
-
-    # 2. Encode & Search
+    
+    # Step B: Encode pakai Lazy Loaded Model
+    model = get_embedding_model()
     q_emb = model.encode([structured_query]).astype("float32")
     
-    # Ambil k hasil teratas (misal 3)
+    # Step C: Search FAISS
     D, I = symptom_index.search(q_emb, k)
 
     if len(I[0]) == 0 or I[0][0] == -1:
         return None, None, structured_query
 
+    # Step D: Optimasi Lookup menggunakan Hash Map (O(1))
+    full_map_by_no = index_full_map_by_no(full_map)
+
     combined_full_context = []
     combined_symptoms = []
-    found_nos = set() # Untuk mencegah duplikasi diagnosa
+    found_nos = set()
 
-    # 3. Looping Hasil FAISS (FIX LOGIKA LAMA)
     for idx in I[0]:
         idx = int(idx)
-        if idx == -1: continue
-        if idx not in symptom_map: continue
+        if idx == -1 or idx not in symptom_map: 
+            continue
             
         candidate = symptom_map[idx]
         candidate_no = candidate["no"]
         
-        # Skip jika nomor diagnosa ini sudah diambil
         if candidate_no in found_nos:
             continue
         found_nos.add(candidate_no)
 
-        # Ambil Teks Gejala untuk referensi prompt
+        # Ambil Teks Gejala (Untuk Prompt)
         combined_symptoms.append(f"[Kandidat Diagnosa NO {candidate_no}]:\n{candidate['text']}")
 
-        # Ambil Full Text (SDKI, SIKI, SLKI) dari full_map
-        for v in full_map.values():
-            if v["no"] == candidate_no:
-                header = f"--- OPSI DIAGNOSA KE-{len(found_nos)} (ID BUKU: {candidate_no}) ---"
-                combined_full_context.append(f"{header}\n{v['text']}")
-                break
+        # Ambil Full Text (SDKI, SIKI, SLKI) menggunakan Fast Lookup
+        # (Kode 2 pakai loop lambat disini, kita ganti pakai optimasi Kode 1)
+        entries = full_map_by_no.get(candidate_no, [])
+        for v in entries:
+             # Ambil entri pertama yang cocok (biasanya cuma satu set per no)
+            header = f"--- OPSI DIAGNOSA KE-{len(found_nos)} (ID BUKU: {candidate_no}) ---"
+            combined_full_context.append(f"{header}\n{v['text']}")
+            break 
     
-    # Jika tidak ada hasil valid
     if not combined_full_context:
         return None, None, structured_query
 
-    # Gabungkan string
+    # Garbage Collection untuk membersihkan memori sisa embedding
+    gc.collect()
+
     final_context = "\n\n".join(combined_full_context)
     final_symptoms = "\n\n".join(combined_symptoms)
 
     return final_context, final_symptoms, structured_query
 
-
 # ==========================================================
-# 2. ROUTE: CREATE LAPORAN (UPDATED)
+# 3. ROUTE: CREATE LAPORAN (CORE LOGIC)
 # ==========================================================
-
 @laporan_bp.route("/", methods=["POST"])
 @jwt_required()
 def create_laporan():
@@ -173,27 +212,27 @@ def create_laporan():
     user = User.query.get(user_id)
     payload = request.get_json()
 
+    # Validasi Input
     if not payload or not payload.get("query") or not payload.get("patient_id"):
         return jsonify({"status": 400, "message": "Harap isi query dan patient_id"}), 400
 
-    query_text = payload["query"]
-    patient_id = payload["patient_id"]
-    patient = Patient.query.get(patient_id)
-
+    patient = Patient.query.get(payload["patient_id"])
     if not patient:
         return jsonify({"status": 404, "message": "Pasien tidak ditemukan"}), 404
     if user.role.name != 'admin' and user.ruangan and patient.ruangan != user.ruangan:
         return jsonify({"status": 403, "message": "Akses ruangan ditolak"}), 403
 
-    # --- 1. RETRIEVAL ---
+    # --- 1. RETRIEVAL (OPTIMIZED) ---
     context_text = ""
     ai_subjective = "-"
     ai_objective = "-"
+    query_text = payload["query"]
 
     try:
+        # Load Cache Index
         symptom_index, symptom_map, full_index, full_map = load_dual_indexes(BASE_DIR)
         
-        # Ambil 4 Kandidat
+        # Search (Fast)
         res_full, _, res_structured = search_dual_index(
             query_text, symptom_index, symptom_map, full_map, k=4
         )
@@ -211,13 +250,13 @@ def create_laporan():
             context_text = "DATA TIDAK DITEMUKAN."
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error Retrieval: {e}")
         context_text = "Error retrieval."
 
     final_subjective = ai_subjective if ai_subjective != "-" and ai_subjective != "" else query_text
     final_objective = ai_objective if ai_objective != "-" else ""
 
-    # --- 2. SYSTEM PROMPT (PERBAIKAN UTAMA: STRICT COPY PASTE) ---
+    # --- 2. SYSTEM PROMPT (STRICT & DETAIL DARI KODE 2) ---
     system_prompt = """
 Anda adalah Sistem Otomasi CPPT (Catatan Perkembangan Pasien Terintegrasi).
 
@@ -237,34 +276,14 @@ ATURAN KRUSIAL (JANGAN DILANGGAR):
 ATURAN PENGISIAN FIELD JSON:
 1. **subjective & objective**: Isi dengan KONDISI PASIEN (Real).
 2. **assessment**: Isi dengan JUDUL/NAMA DIAGNOSA yang dipilih (Contoh: "Nyeri Akut (D.0077)").
-3. **SDKI**: Isi array ini HANYA dengan Nama Diagnosa, Kode, dan Penyebab/Faktor Risiko (jika ada di teks). **PENTING: JANGAN masukkan list "Data Subjektif" atau "Data Objektif" dari buku ke dalam array SDKI ini, karena itu akan duplikat dengan data pasien.**
+3. **SDKI**: Isi array ini HANYA dengan Nama Diagnosa, Kode, dan Penyebab/Faktor Risiko (jika ada di teks). **PENTING: JANGAN masukkan list "Data Subjektif" atau "Data Objektif" dari buku ke dalam array SDKI ini.**
 4. **SIKI**: Salin SEMUA poin intervensi (Observasi, Terapeutik, Edukasi, Kolaborasi).
 5. **SLKI**: Salin SEMUA kriteria hasil luaran.
 
-ATURAN PEMILIHAN DIAGNOSA (CRITICAL):
-1. Bandingkan "KONDISI PASIEN" dengan "DATA SUBJEKTIF/OBJEKTIF" pada setiap Opsi Diagnosa.
-2. JANGAN MEMILIH Opsi Diagnosa yang data objektifnya TIDAK COCOK, meskipun ada satu atau dua kata kunci yang sama.
-3. CONTOH: Jika pasien "Mulut Kering" tapi tidak ada luka, JANGAN PILIH "Gangguan Integritas Kulit" walaupun di database ada kata "kering". Pilih yang lebih relevan seperti "Defisit Nutrisi" atau "Hipovolemia" jika ada.
-4. Prioritaskan diagnosa yang mencakup keluhan UTAMA pasien (misal: Kelemahan tubuh sesisi).
-
 ATURAN PENGGABUNGAN DAN FORMATTING:
-- **Assessment**: Gabungkan Judul Diagnosis dengan tanda koma atau simbol "&" (Contoh: "Nyeri Akut (D.0077) & Gangguan Mobilitas Fisik (D.0054)").
+- **Assessment**: Gabungkan Judul Diagnosis dengan tanda koma atau simbol "&".
 - **SDKI, SIKI, SLKI**: Masukkan isi dari SEMUA diagnosis yang dipilih ke dalam masing-masing array.
-- **SEPARATOR (PENTING)**: Di dalam array SDKI, SIKI, dan SLKI, gunakan string khusus "--------------------" (garis putus-putus) untuk memisahkan item milik Diagnosis 1 dan Diagnosis 2.
-- **Urutan**: Tulis item Diagnosis 1, lalu separator, lalu item Diagnosis 2.
-
-CONTOH FORMAT LIST (Misalnya SIKI):
-[
-  "Observasi: Identifikasi skala nyeri",
-  "Terapeutik: Berikan teknik relaksasi",
-  "--------------------",  <-- INI SEPARATOR
-  "Observasi: Identifikasi kekuatan otot (Milik Diagnosa 2)",
-  "Terapeutik: Fasilitasi mobilisasi (Milik Diagnosa 2)"
-]
-
-ATURAN KONTEN:
-- Tetap lakukan COPY-PASTE sesuai teks asli di database.
-- Jangan meringkas kalimat.
+- **SEPARATOR (PENTING)**: Di dalam array SDKI, SIKI, dan SLKI, gunakan string khusus "--------------------" untuk memisahkan item milik Diagnosis 1 dan Diagnosis 2.
 
 FORMAT JSON OUTPUT:
 {
@@ -274,9 +293,9 @@ FORMAT JSON OUTPUT:
   "plan": "Tulis 'Lakukan Intervensi Sesuai SIKI/SLKI'",
   "tindakan_lanjutan": "...",
   "keterangan": "...",
-  "SDKI": ["Salin semua poin SDKI disini..."],
-  "SIKI": ["Salin semua poin SIKI (Observasi, Terapeutik, Edukasi, Kolaborasi) disini..."],
-  "SLKI": ["Salin semua kriteria hasil SLKI disini..."]
+  "SDKI": ["..."],
+  "SIKI": ["..."],
+  "SLKI": ["..."]
 }
 """
 
@@ -297,7 +316,7 @@ Lalu SALIN SEMUA ISINYA ke dalam JSON tanpa pengurangan sedikitpun.
     try:
         completion = client.chat.completions.create(
             model=api_model,
-            temperature=0.1, # Suhu sangat rendah agar patuh copy-paste
+            temperature=0.1,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt_content}
@@ -306,19 +325,16 @@ Lalu SALIN SEMUA ISINYA ke dalam JSON tanpa pengurangan sedikitpun.
         ai_json = completion.choices[0].message.content
         ai_json = re.sub(r"^```json\s*|\s*```$", "", ai_json.strip(), flags=re.MULTILINE)
         parsed = json.loads(ai_json)
-
     except Exception as e:
         parsed = {
             "subjective": final_subjective, "objective": final_objective,
-            "assessment": "Gagal", "plan": "-", "tindakan_lanjutan": "-", "keterangan": str(e),
+            "assessment": "Gagal/Manual Review", "plan": "-", "tindakan_lanjutan": "-", "keterangan": str(e),
             "SDKI": [], "SIKI": [], "SLKI": []
         }
 
     # --- 4. SAVE TO DB ---
-    # Validasi Assessment
     assess_str = parsed.get("assessment", "")
-    if not assess_str or assess_str == "-":
-        assess_str = "Diagnosa Keperawatan"
+    if not assess_str or assess_str == "-": assess_str = "Diagnosa Keperawatan"
 
     laporan = Laporan(
         patient=patient,
@@ -340,9 +356,13 @@ Lalu SALIN SEMUA ISINYA ke dalam JSON tanpa pengurangan sedikitpun.
 
     return jsonify({
         "status": 201,
-        "message": "Laporan berhasil dibuat (Full Standard Copy)",
+        "message": "Laporan berhasil dibuat (Optimized + Full Standard)",
         "data": laporan_to_dict(laporan)
     }), 201
+
+# ==========================================================
+# 4. FULL CRUD ROUTES (DARI KODE 2 - TETAP DIPERTAHANKAN)
+# ==========================================================
 
 @laporan_bp.route("/", methods=["GET"])
 @jwt_required()
@@ -367,7 +387,6 @@ def get_laporan(id):
         return jsonify({"status": 404, "message": "Laporan not found", "data": None}), 404
 
     patient = laporan.patient
-
     if user.role.name != 'admin' and user.ruangan and patient.ruangan != user.ruangan:
         return jsonify({"status": 403, "message": "Akses ditolak"}), 403
 
@@ -377,7 +396,6 @@ def get_laporan(id):
         "data": laporan_to_dict(laporan)
     }), 200
 
-# ================== UPDATE ==================
 @laporan_bp.route("/<int:id>", methods=["PUT"])
 @jwt_required()
 def update_laporan(id):
@@ -393,15 +411,9 @@ def update_laporan(id):
         return jsonify({"status": 403, "message": "Akses ditolak"}), 403
 
     payload = request.get_json()
-
-    for field in [
-        "subjective",
-        "objective",
-        "assessment",
-        "plan",
-        "tindakan_lanjutan",
-        "keterangan"
-    ]:
+    
+    # Update Fields
+    for field in ["subjective", "objective", "assessment", "plan", "tindakan_lanjutan", "keterangan"]:
         if field in payload:
             setattr(laporan, field, payload[field])
 
@@ -410,14 +422,12 @@ def update_laporan(id):
             setattr(laporan, field, json.dumps(payload[field]))
 
     db.session.commit()
-
     return jsonify({
         "status": 200,
         "message": "Laporan updated successfully",
         "data": laporan_to_dict(laporan)
     }), 200
 
-# ================== DELETE ==================
 @laporan_bp.route("/<int:id>", methods=["DELETE"])
 @jwt_required()
 def delete_laporan(id):
@@ -434,23 +444,17 @@ def delete_laporan(id):
 
     db.session.delete(laporan)
     db.session.commit()
+    return jsonify({"status": 200, "message": "Laporan deleted", "data": None}), 200
 
-    return jsonify({
-        "status": 200,
-        "message": "Laporan deleted successfully",
-        "data": None
-    }), 200
-
-# ================== SEARCH ==================
 @laporan_bp.route("/search", methods=["GET"])
 @jwt_required()
 def search_laporan():
     user_id = int(get_jwt_identity())
     user = User.query.get(user_id)
-
     keyword = request.args.get("q")
+    
     if not keyword:
-        return jsonify({"status": 400, "message": "Query parameter 'q' required", "data": None}), 400
+        return jsonify({"status": 400, "message": "Query parameter 'q' required"}), 400
 
     query = Laporan.query.filter(
         (Laporan.subjective.ilike(f"%{keyword}%")) |
@@ -464,7 +468,6 @@ def search_laporan():
         query = query.join(Patient).filter(Patient.ruangan == user.ruangan)
 
     results = query.all()
-
     return jsonify({
         "status": 200,
         "message": "success",
