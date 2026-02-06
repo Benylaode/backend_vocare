@@ -221,7 +221,7 @@ def create_cppt():
 
     # 5. Simpan
     now = datetime.now(timezone.utc)
-    now.astimezone(ZoneInfo("Asia/Makassar"))
+    now = now.astimezone(ZoneInfo("Asia/Makassar"))
     shift = determine_shift(now)
 
     try:
