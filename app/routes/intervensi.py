@@ -94,7 +94,7 @@ def create_intervensi():
 
     # buat intervensi baru
     new_intervensi = Intervensi(
-        tanggal=datetime.now(ZoneInfo("Asia/Makassar")).date(),
+        tanggal=datetime.now(ZoneInfo("Asia/Makassar")),
         implementasi=implementasi,
         evaluasi=evaluasi,
         patient_id=patient_id,
