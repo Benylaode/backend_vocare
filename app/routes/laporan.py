@@ -22,10 +22,10 @@ client = OpenAI(
 laporan_bp = Blueprint("laporan_bp", __name__, url_prefix="/laporan")
 
 # ==========================================================
-# 0. GLOBAL INITIALIZATION (OPTIMASI PERFORMA)
+# 1. GLOBAL INITIALIZATION (PERFORMA TINGGI)
 # ==========================================================
-# Variabel ini akan dimuat SEKALI SAJA saat server start
-# Tidak akan dimuat ulang setiap request -> Sangat Cepat
+# Variabel ini dimuat SEKALI SAJA saat start.
+# Menggabungkan kecepatan Kode 2 dengan struktur data Kode 1.
 
 print("--- [INIT] Loading AI Models & Indexes ---")
 try:
@@ -63,7 +63,7 @@ except Exception as e:
 
 
 # ==========================================================
-# 1. HELPER FUNCTIONS
+# 2. HELPER FUNCTIONS
 # ==========================================================
 
 def safe_json(val):
@@ -89,26 +89,24 @@ def laporan_to_dict(l):
         "user_id": l.user_id
     }
 
-def search_dual_index_fast(query, k=3):
+def search_dual_index_fast(query, k=4):
     """
-    Versi Cepat: Menggunakan Global Variables & Tanpa LLM Pre-processing.
-    Langsung mencari berdasarkan raw query.
+    Mengambil kandidat diagnosa berdasarkan query.
+    Menggunakan index global (Cepat).
     """
-    # Cek ketersediaan index
     if SYMPTOM_INDEX is None or SYMPTOM_MAP is None:
-        return None, None
+        return None
 
-    # Encode Query (Cepat di CPU untuk model MiniLM)
+    # Encode Query
     q_emb = model.encode([query]).astype("float32")
     
-    # Search FAISS (Operasi RAM, <0.1 detik)
+    # Search FAISS
     D, I = SYMPTOM_INDEX.search(q_emb, k)
 
     if len(I[0]) == 0 or I[0][0] == -1:
-        return None, None
+        return None
 
     combined_full_context = []
-    combined_symptoms = []
     found_nos = set()
 
     for idx in I[0]:
@@ -119,32 +117,27 @@ def search_dual_index_fast(query, k=3):
         candidate = SYMPTOM_MAP[idx]
         candidate_no = candidate["no"]
         
-        # Cegah duplikasi diagnosa yang sama
+        # Cegah duplikasi
         if candidate_no in found_nos:
             continue
         found_nos.add(candidate_no)
 
-        # Simpan snippet gejala untuk konteks
-        combined_symptoms.append(f"[Kandidat Diagnosa NO {candidate_no}]:\n{candidate['text']}")
-
-        # Ambil Full Text SDKI/SIKI/SLKI dari map
+        # Ambil Full Text SDKI/SIKI/SLKI dari FULL_MAP
         for v in FULL_MAP.values():
             if v["no"] == candidate_no:
-                header = f"--- OPSI DIAGNOSA KE-{len(found_nos)} (ID BUKU: {candidate_no}) ---"
+                header = f"--- OPSI DIAGNOSA KE-{len(found_nos)} (ID: {candidate_no}) ---"
+                # Kita masukkan teks lengkap agar AI bisa copy-paste
                 combined_full_context.append(f"{header}\n{v['text']}")
                 break
     
     if not combined_full_context:
-        return None, None
+        return None
 
-    final_context = "\n\n".join(combined_full_context)
-    final_symptoms = "\n\n".join(combined_symptoms)
-
-    return final_context, final_symptoms
+    return "\n\n".join(combined_full_context)
 
 
 # ==========================================================
-# 2. ROUTE: CREATE LAPORAN (OPTIMIZED)
+# 3. ROUTE: CREATE LAPORAN (HYBRID PERFORMA & AKURASI)
 # ==========================================================
 
 @laporan_bp.route("/", methods=["POST"])
@@ -166,68 +159,71 @@ def create_laporan():
     if user.role.name != 'admin' and user.ruangan and patient.ruangan != user.ruangan:
         return jsonify({"status": 403, "message": "Akses ruangan ditolak"}), 403
 
-    # --- 1. RETRIEVAL (FAST MODE) ---
+    # --- 1. RETRIEVAL (MENGGUNAKAN LOGIKA CEPAT KODE 2) ---
     context_text = ""
     try:
-        # Panggil fungsi search cepat (tidak load file lagi)
-        res_full, _ = search_dual_index_fast(query_text, k=4)
-        
+        res_full = search_dual_index_fast(query_text, k=4)
         if res_full:
             context_text = res_full
         else:
             context_text = "DATA TIDAK DITEMUKAN DALAM DATABASE."
-
     except Exception as e:
         print(f"Error retrieval: {e}")
         context_text = "Error retrieval system."
 
-    # --- 2. SYSTEM PROMPT (SINGLE STEP) ---
-    # Kita hapus LLM pertama. Tugas memisahkan Subjective/Objective kita serahkan ke sini.
+    # --- 2. SYSTEM PROMPT (MENGGUNAKAN LOGIKA KETAT KODE 1) ---
+    # Prompt ini digabungkan: Meminta AI memisahkan S/O (seperti Kode 2) 
+    # TAPI dengan aturan Copy-Paste yang sangat ketat (seperti Kode 1).
     
     system_prompt = """
 Anda adalah Sistem Otomasi CPPT (Catatan Perkembangan Pasien Terintegrasi).
 
-TUGAS UTAMA:
-1. Analisis "INPUT KONDISI PASIEN" (User Input). Pisahkan mana data SUBJEKTIF (Keluhan) dan OBJEKTIF (Temuan Klinis).
-2. Cocokkan dengan "OPSI DIAGNOSA DARI DATABASE".
-3. Pilih Diagnosa yang paling relevan.
-4. HASILKAN SATU JSON OUTPUT.
+TUGAS GABUNGAN:
+1. **Analisis Input**: Baca "INPUT MENTAH" dari user. Pisahkan kalimat menjadi DATA SUBJEKTIF (Keluhan Pasien) dan DATA OBJEKTIF (Hasil pemeriksaan/Tanda Vital).
+2. **Pilih Diagnosa**: Bandingkan data pasien dengan "OPSI DIAGNOSA DARI DATABASE". Pilih 1 atau lebih yang paling relevan.
+3. **Generate Output**: Buat JSON lengkap.
 
-ATURAN KRUSIAL (COPY-PASTE):
-- **JANGAN MERINGKAS ISI SIKI/SLKI**.
-- Jika memilih suatu diagnosa, **SALIN SEMUA** poin Intervensi, Observasi, Terapeutik, Edukasi, dan Kolaborasi persis seperti di teks database ke dalam array JSON.
-- Gunakan separator "--------------------" dalam array jika memilih lebih dari 1 diagnosa.
+ATURAN KRUSIAL (STRICT MODE - JANGAN DILANGGAR):
+- **SDKI, SIKI, SLKI WAJIB COPY-PASTE**: Anda DILARANG meringkas isi database.
+- Jika Anda memilih "Opsi Diagnosa 1", salin **SEMUA** poin (Intervensi, Observasi, Terapeutik, Edukasi, Kolaborasi) persis seperti teks aslinya ke dalam array JSON.
+- **Assessment**: Isi dengan Judul Diagnosa yang dipilih (Contoh: "Nyeri Akut (D.0077)").
+- **Subjective & Objective**: Isi berdasarkan hasil analisis Anda terhadap input mentah user.
+
+ATURAN FORMATTING JSON:
+- **SDKI**: Array berisi string nama diagnosa & penyebab.
+- **SIKI**: Array berisi string SEMUA intervensi. Gunakan separator "--------------------" jika memilih lebih dari 1 diagnosa.
+- **SLKI**: Array berisi string SEMUA kriteria hasil. Gunakan separator "--------------------" jika memilih lebih dari 1 diagnosa.
 
 FORMAT JSON OUTPUT:
 {
-  "subjective": "Tulis hasil ekstraksi keluhan pasien disini...",
-  "objective": "Tulis hasil ekstraksi temuan klinis/tanda vital disini...",
+  "subjective": "Hasil ekstraksi keluhan...",
+  "objective": "Hasil ekstraksi data klinis (TD, Nadi, Suhu, Lab, dll)...",
   "assessment": "JUDUL DIAGNOSA (Kode)",
   "plan": "Lakukan Intervensi Sesuai SIKI/SLKI",
-  "tindakan_lanjutan": "Monitor TTV berkala",
+  "tindakan_lanjutan": "Monitor kondisi secara berkala",
   "keterangan": "Generated by AI",
-  "SDKI": ["...Salin isi SDKI..."],
-  "SIKI": ["...Salin isi SIKI..."],
-  "SLKI": ["...Salin isi SLKI..."]
+  "SDKI": ["Salin item SDKI disini..."],
+  "SIKI": ["Salin item SIKI disini..."],
+  "SLKI": ["Salin item SLKI disini..."]
 }
 """
 
     user_prompt_content = f"""
---- INPUT KONDISI PASIEN (RAW) ---
+--- INPUT MENTAH (KONDISI PASIEN) ---
 {query_text}
 
 --- PILIHAN DATA DARI DATABASE (OPSI LENGKAP) ---
 {context_text}
 
 --- INSTRUKSI ---
-Buat JSON CPPT berdasarkan data di atas. Pisahkan subjektif/objektif secara cerdas dari input raw.
+Analisis input mentah -> Pisahkan S/O -> Pilih Diagnosa -> COPY PASTE ISI DATABASE KE JSON.
 """
 
     # --- 3. EXECUTE LLM ---
     try:
         completion = client.chat.completions.create(
             model=api_model,
-            temperature=0.1, # Tetap rendah agar patuh
+            temperature=0.1, # Suhu rendah untuk kepatuhan tinggi
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt_content}
@@ -235,18 +231,20 @@ Buat JSON CPPT berdasarkan data di atas. Pisahkan subjektif/objektif secara cerd
         )
         ai_json = completion.choices[0].message.content
         
-        # Bersihkan markdown json jika ada
+        # Bersihkan format markdown ```json
         ai_json = re.sub(r"^```json\s*|\s*```$", "", ai_json.strip(), flags=re.MULTILINE)
         parsed = json.loads(ai_json)
 
     except Exception as e:
-        print(f"Error LLM/Parsing: {e}")
-        # Fallback jika error
+        print(f"Error AI Processing: {e}")
+        # Fallback Mechanism
         parsed = {
-            "subjective": query_text, 
+            "subjective": query_text,
             "objective": "-",
-            "assessment": "Gagal Generate", 
-            "plan": "-", "tindakan_lanjutan": "-", "keterangan": f"Error: {str(e)}",
+            "assessment": "Gagal Generate",
+            "plan": "-", 
+            "tindakan_lanjutan": "-", 
+            "keterangan": f"Error: {str(e)}",
             "SDKI": [], "SIKI": [], "SLKI": []
         }
 
@@ -275,12 +273,13 @@ Buat JSON CPPT berdasarkan data di atas. Pisahkan subjektif/objektif secara cerd
 
     return jsonify({
         "status": 201,
-        "message": "Laporan berhasil dibuat (Optimized Mode)",
+        "message": "Laporan berhasil dibuat (Hybrid Fast & Accurate)",
         "data": laporan_to_dict(laporan)
     }), 201
 
+
 # ==========================================================
-# 3. ROUTE LAINNYA (STANDARD)
+# 4. STANDARD CRUD ROUTES (GET, PUT, DELETE, SEARCH)
 # ==========================================================
 
 @laporan_bp.route("/", methods=["GET"])
@@ -300,90 +299,61 @@ def get_laporans():
 def get_laporan(id):
     user_id = int(get_jwt_identity())
     user = User.query.get(user_id)
-
     laporan = Laporan.query.get(id)
     if not laporan:
         return jsonify({"status": 404, "message": "Laporan not found", "data": None}), 404
-
     patient = laporan.patient
-
     if user.role.name != 'admin' and user.ruangan and patient.ruangan != user.ruangan:
         return jsonify({"status": 403, "message": "Akses ditolak"}), 403
-
-    return jsonify({
-        "status": 200,
-        "message": "success",
-        "data": laporan_to_dict(laporan)
-    }), 200
+    return jsonify({"status": 200, "message": "success", "data": laporan_to_dict(laporan)}), 200
 
 @laporan_bp.route("/<int:id>", methods=["PUT"])
 @jwt_required()
 def update_laporan(id):
     user_id = int(get_jwt_identity())
     user = User.query.get(user_id)
-
     laporan = Laporan.query.get(id)
     if not laporan:
         return jsonify({"status": 404, "message": "Laporan not found", "data": None}), 404
-
     patient = laporan.patient
     if user.role.name != 'admin' and user.ruangan and patient.ruangan != user.ruangan:
         return jsonify({"status": 403, "message": "Akses ditolak"}), 403
-
+    
     payload = request.get_json()
-
-    for field in [
-        "subjective", "objective", "assessment", "plan", 
-        "tindakan_lanjutan", "keterangan"
-    ]:
+    for field in ["subjective", "objective", "assessment", "plan", "tindakan_lanjutan", "keterangan"]:
         if field in payload:
             setattr(laporan, field, payload[field])
-
     for field in ["SDKI", "SIKI", "SLKI"]:
         if field in payload:
             setattr(laporan, field, json.dumps(payload[field]))
-
+            
     db.session.commit()
-
-    return jsonify({
-        "status": 200,
-        "message": "Laporan updated successfully",
-        "data": laporan_to_dict(laporan)
-    }), 200
+    return jsonify({"status": 200, "message": "Laporan updated", "data": laporan_to_dict(laporan)}), 200
 
 @laporan_bp.route("/<int:id>", methods=["DELETE"])
 @jwt_required()
 def delete_laporan(id):
     user_id = int(get_jwt_identity())
     user = User.query.get(user_id)
-
     laporan = Laporan.query.get(id)
     if not laporan:
         return jsonify({"status": 404, "message": "Laporan not found", "data": None}), 404
-
     patient = laporan.patient
     if user.role.name != 'admin' and user.ruangan and patient.ruangan != user.ruangan:
         return jsonify({"status": 403, "message": "Akses ditolak"}), 403
-
     db.session.delete(laporan)
     db.session.commit()
-
-    return jsonify({
-        "status": 200,
-        "message": "Laporan deleted successfully",
-        "data": None
-    }), 200
+    return jsonify({"status": 200, "message": "Laporan deleted", "data": None}), 200
 
 @laporan_bp.route("/search", methods=["GET"])
 @jwt_required()
 def search_laporan():
     user_id = int(get_jwt_identity())
     user = User.query.get(user_id)
-
     keyword = request.args.get("q")
     if not keyword:
         return jsonify({"status": 400, "message": "Query parameter 'q' required", "data": None}), 400
-
+        
     query = Laporan.query.filter(
         (Laporan.subjective.ilike(f"%{keyword}%")) |
         (Laporan.objective.ilike(f"%{keyword}%")) |
@@ -391,14 +361,7 @@ def search_laporan():
         (Laporan.plan.ilike(f"%{keyword}%")) |
         (Laporan.keterangan.ilike(f"%{keyword}%"))
     )
-
     if user.role.name != 'admin' and user.ruangan:
         query = query.join(Patient).filter(Patient.ruangan == user.ruangan)
-
     results = query.all()
-
-    return jsonify({
-        "status": 200,
-        "message": "success",
-        "data": [laporan_to_dict(l) for l in results]
-    }), 200
+    return jsonify({"status": 200, "message": "success", "data": [laporan_to_dict(l) for l in results]}), 200
