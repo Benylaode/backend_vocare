@@ -1,3 +1,4 @@
+from zoneinfo import ZoneInfo
 from flask import Blueprint, request, jsonify
 from app.model import db, CPPT, Patient, Laporan, User
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -9,6 +10,8 @@ import re
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
+from datetime import datetime, timezone
+
 
 load_dotenv()
 api_key = os.getenv("OPENROUTER_API_KEY_KU")
@@ -217,7 +220,8 @@ def create_cppt():
         }
 
     # 5. Simpan
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
+    now.astimezone(ZoneInfo("Asia/Makassar"))
     shift = determine_shift(now)
 
     try:

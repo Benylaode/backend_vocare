@@ -1,3 +1,4 @@
+from zoneinfo import ZoneInfo
 from flask import Blueprint, request, jsonify
 from app.model import db, Assesment, Patient, User
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -242,7 +243,7 @@ def create_assesment():
     new_assesment = Assesment(
         patient_id=patient.id if patient else None,
         user_id=user.id, 
-        tanggal=datetime.utcnow(),
+        tanggal=datetime.now(ZoneInfo("Asia/Makassar")).date(),
         data=parsed_data 
     )
     db.session.add(new_assesment)
