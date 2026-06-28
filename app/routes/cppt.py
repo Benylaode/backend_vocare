@@ -87,19 +87,40 @@ def search_sdki_siki(query):
 @jwt_required()
 def get_cppts():
     cppts = CPPT.query.order_by(CPPT.tanggal.desc()).all()
-    data = [{
-        "id": c.id, 
-        "patient_id": c.patient_id, 
-        "patient_name": c.patient.nama if c.patient else "Unknown",
-        "tanggal": c.tanggal.isoformat(),
-        "shift": c.shift, 
-        "subjective": c.subjective, 
-        "objective": c.objective,
-        "assessment": c.assessment, 
-        "plan": c.plan
-    } for c in cppts]
-    return jsonify({"status": 200, "message": "Success", "data": data}), 200
 
+    data = [{
+        "id": c.id,
+        "patient_id": c.patient_id,
+        "patient_name": c.patient.nama if c.patient else "Unknown",
+
+        # Data pembuat CPPT
+        "user_id": c.user_id,
+
+        # Informasi CPPT
+        "tanggal": c.tanggal.isoformat(),
+        "shift": c.shift,
+        "jabatan": c.jabatan,
+
+        # SOAP
+        "subjective": c.subjective,
+        "objective": c.objective,
+        "assessment": c.assessment,
+        "plan": c.plan,
+
+        # Tambahan
+        "keterangan": c.keterangan,
+        "dokter": c.dokter,
+        "signature": c.signature,
+
+        # Relasi laporan
+        "laporan_id": c.laporan_id,
+    } for c in cppts]
+
+    return jsonify({
+        "status": 200,
+        "message": "Success",
+        "data": data
+    }), 200
 
 # 2. READ ONE (Detail)
 @cppt_bp.route("/<int:cppt_id>", methods=["GET"])
