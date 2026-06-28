@@ -34,8 +34,8 @@ def get_users():
 @user_bp.route('/<int:user_id>', methods=['GET'])
 @jwt_required()
 def get_user(user_id):
-    if not admin_required():
-        return jsonify({"status": 403, "message": "Akses ditolak."}), 403
+    # if not admin_required():
+    #     return jsonify({"status": 403, "message": "Akses ditolak."}), 403
 
     user = User.query.get(user_id)
     if not user:
